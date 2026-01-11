@@ -47,12 +47,13 @@ class TenantOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    # 🔥 NUEVO
+    # 👇 agregado para el front
     admin_email: str | None = None
     admin_name: str | None = None
 
     class Config:
         orm_mode = True
+
 # --- Users
 class EmployeeCreate(BaseModel):
     name: str = Field(min_length=2)

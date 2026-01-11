@@ -59,7 +59,6 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
 
-    # 🔥 NUEVO
     plan: Mapped[PlanType] = mapped_column(
         Enum(PlanType),
         default=PlanType.FREE_TRIAL,
@@ -68,7 +67,7 @@ class Tenant(Base):
 
     trial_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
@@ -98,7 +97,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     tenant: Mapped["Tenant"] = relationship(back_populates="users")
 
 class Product(Base):

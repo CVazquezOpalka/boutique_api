@@ -1,22 +1,34 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
+from sqlalchemy import text
+
 from .models import Tenant, User, Role, Product, Variant, PlanType
 from .security import hash_password
 
-from sqlalchemy import text
-from datetime import datetime, timedelta
+
+# -------------------------
+# SQLite MVP auto-migrations
+# -------------------------
+
+def _is_sqlite(db: Session) -> bool:
+    dialect = db.bind.dialect.name if db.bind else ""
+    return dialect == "sqlite"
+
+
+def _sqlite_table_columns(db: Session, table_name: str) -> set[str]:
+    cols = db.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    return {c[1] for c in cols}  # c[1] = column name
+
 
 def _sqlite_add_missing_tenant_columns(db: Session):
-    # Solo aplica si estás en SQLite
-    dialect = db.bind.dialect.name if db.bind else ""
-    if dialect != "sqlite":
+    if not _is_sqlite(db):
         return
 
-    # Obtener columnas actuales de la tabla tenants
-    cols = db.execute(text("PRAGMA table_info(tenants)")).fetchall()
-    existing = {c[1] for c in cols}  # c[1] = name
+    existing = _sqlite_table_columns(db, "tenants")
 
-    # Agregar columnas faltantes (SQLite permite ADD COLUMN)
-    # Nota: defaults en SQLite no siempre se aplican retroactivamente, por eso luego hacemos UPDATE.
+    # Tenants columns
     if "plan" not in existing:
         db.execute(text("ALTER TABLE tenants ADD COLUMN plan VARCHAR(20)"))
     if "trial_end" not in existing:
@@ -28,46 +40,78 @@ def _sqlite_add_missing_tenant_columns(db: Session):
 
     db.commit()
 
-    # Backfill de valores para filas ya existentes
+    # Backfill
     now = datetime.utcnow().isoformat(sep=" ")
-    # FREE_TRIAL por defecto
-    db.execute(text("UPDATE tenants SET plan = 'FREE_TRIAL' WHERE plan IS NULL"))
-    # activar por defecto
-    db.execute(text("UPDATE tenants SET is_active = 1 WHERE is_active IS NULL"))
-    # updated_at fallback
-    db.execute(text("UPDATE tenants SET updated_at = COALESCE(updated_at, created_at, :now)"), {"now": now})
 
-    # Si es FREE_TRIAL y trial_end es NULL, setear trial_end = created_at + 15 días (o now + 15 si no hay created_at)
-    # SQLite date() soporta '+15 day'
-    db.execute(text("""
-        UPDATE tenants
-        SET trial_end = COALESCE(trial_end, datetime(COALESCE(created_at, :now), '+15 day'))
-        WHERE plan = 'FREE_TRIAL' AND trial_end IS NULL
-    """), {"now": now})
+    db.execute(text("UPDATE tenants SET plan = 'FREE_TRIAL' WHERE plan IS NULL"))
+    db.execute(text("UPDATE tenants SET is_active = 1 WHERE is_active IS NULL"))
+    db.execute(
+        text("UPDATE tenants SET updated_at = COALESCE(updated_at, created_at, :now)"),
+        {"now": now},
+    )
+    db.execute(
+        text("""
+            UPDATE tenants
+            SET trial_end = COALESCE(trial_end, datetime(COALESCE(created_at, :now), '+15 day'))
+            WHERE plan = 'FREE_TRIAL' AND trial_end IS NULL
+        """),
+        {"now": now},
+    )
 
     db.commit()
 
 
+def _sqlite_add_missing_user_columns(db: Session):
+    if not _is_sqlite(db):
+        return
+
+    existing = _sqlite_table_columns(db, "users")
+
+    # Users columns (solo las necesarias para tu flujo MVP)
+    if "must_change_password" not in existing:
+        db.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN"))
+    if "updated_at" not in existing:
+        # opcional: si tu modelo User ya tiene updated_at, esto lo crea
+        db.execute(text("ALTER TABLE users ADD COLUMN updated_at DATETIME"))
+
+    db.commit()
+
+    # Backfill: must_change_password default false, updated_at fallback
+    now = datetime.utcnow().isoformat(sep=" ")
+    db.execute(text("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"))
+    db.execute(text("UPDATE users SET updated_at = COALESCE(updated_at, created_at, :now)"), {"now": now})
+    db.commit()
+
+
+# -----------
+# Seed
+# -----------
+
 def ensure_seed(db: Session):
-    # ✅ 0) Auto-migrate tenants columns en SQLite (MVP)
+    # ✅ 0) Auto-migrate SQLite (MVP)
     _sqlite_add_missing_tenant_columns(db)
+    _sqlite_add_missing_user_columns(db)
 
     # --- Superadmin
-    if not db.query(User).filter(User.email == "super@boutiqueos.com").first():
+    super_email = "super@boutiqueos.com"
+    super_user = db.query(User).filter(User.email == super_email).first()
+    if not super_user:
         db.add(User(
             tenant_id=None,
             role=Role.SUPER_ADMIN,
             name="Super Admin",
-            email="super@boutiqueos.com",
+            email=super_email,
             password_hash=hash_password("123456"),
-            active=True
+            active=True,
+            must_change_password=False,  # super no necesita cambiar
         ))
         db.commit()
 
-    # --- Tenant base
+    # --- Tenant base (Boutique Luna)
     tenant = db.query(Tenant).filter(Tenant.slug == "luna").first()
+    now = datetime.utcnow()
+
     if not tenant:
-        now = datetime.utcnow()
         tenant = Tenant(
             name="Boutique Luna",
             slug="luna",
@@ -79,38 +123,48 @@ def ensure_seed(db: Session):
         db.commit()
         db.refresh(tenant)
     else:
-        # Por si existía de antes sin datos nuevos (en DB vieja)
-        now = datetime.utcnow()
+        # Backfill por si existe viejo
+        changed = False
         if getattr(tenant, "plan", None) is None:
             tenant.plan = PlanType.FREE_TRIAL
+            changed = True
         if getattr(tenant, "is_active", None) is None:
             tenant.is_active = True
+            changed = True
         if tenant.plan == PlanType.FREE_TRIAL and getattr(tenant, "trial_end", None) is None:
             tenant.trial_end = (tenant.created_at or now) + timedelta(days=15)
-        db.commit()
-        db.refresh(tenant)
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(tenant)
 
-    # --- Admin tenant
-    if not db.query(User).filter(User.email == "admin@luna.com").first():
+    # --- Admin tenant (Luna)
+    admin_email = "admin@luna.com"
+    admin_user = db.query(User).filter(User.email == admin_email).first()
+    if not admin_user:
         db.add(User(
             tenant_id=tenant.id,
             role=Role.ADMIN,
             name="Admin Luna",
-            email="admin@luna.com",
+            email=admin_email,
             password_hash=hash_password("123456"),
-            active=True
+            active=True,
+            must_change_password=False,  # en seed no forzamos cambio
         ))
         db.commit()
 
-    # --- Employee tenant
-    if not db.query(User).filter(User.email == "emp@luna.com").first():
+    # --- Employee tenant (Luna)
+    emp_email = "emp@luna.com"
+    emp_user = db.query(User).filter(User.email == emp_email).first()
+    if not emp_user:
         db.add(User(
             tenant_id=tenant.id,
             role=Role.EMPLOYEE,
             name="Empleado 1",
-            email="emp@luna.com",
+            email=emp_email,
             password_hash=hash_password("123456"),
-            active=True
+            active=True,
+            must_change_password=False,
         ))
         db.commit()
 
