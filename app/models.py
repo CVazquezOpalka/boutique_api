@@ -7,6 +7,12 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
+class PlanType(str, enum.Enum):
+    FREE_TRIAL = "FREE_TRIAL"
+    MONTHLY = "MONTHLY"
+    SEMESTER = "SEMESTER"
+    ANNUAL = "ANNUAL"
+
 class Role(str, enum.Enum):
     SUPER_ADMIN = "SUPER_ADMIN"
     ADMIN = "ADMIN"
@@ -29,12 +35,51 @@ class StockReason(str, enum.Enum):
     EGRESO = "EGRESO"
     RESERVA = "RESERVA"
 
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    jti: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user = relationship("User")
+
 class Tenant(Base):
     __tablename__ = "tenants"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # 🔥 NUEVO
+    plan: Mapped[PlanType] = mapped_column(
+        Enum(PlanType),
+        default=PlanType.FREE_TRIAL,
+        nullable=False,
+    )
+
+    trial_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
     users: Mapped[list["User"]] = relationship(back_populates="tenant")
 

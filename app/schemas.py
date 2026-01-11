@@ -1,11 +1,12 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime
-from .models import Role, PaymentMethod, CashStatus, StockReason
+from .models import Role, PaymentMethod, CashStatus, StockReason, PlanType
 
 # --- Auth
 class TokenOut(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
 
 class MeOut(BaseModel):
@@ -25,19 +26,6 @@ class TenantCreate(BaseModel):
     slug: str = Field(min_length=2)
     admin_user: AdminUserCreate
 
-class TenantOut(BaseModel):
-    id: int
-    name: str
-    slug: str
-    created_at: datetime
-
-# --- Users
-class EmployeeCreate(BaseModel):
-    name: str = Field(min_length=2)
-    email: EmailStr
-    password: str = Field(min_length=4)
-    role: Role = Role.EMPLOYEE  # ADMIN o EMPLOYEE (controlado en router)
-
 class UserOut(BaseModel):
     id: int
     tenant_id: Optional[int]
@@ -46,6 +34,31 @@ class UserOut(BaseModel):
     email: EmailStr
     active: bool
     created_at: datetime
+
+class TenantOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+    plan: PlanType
+    trial_end: datetime | None
+    is_active: bool
+
+    created_at: datetime
+    updated_at: datetime
+
+    # 🔥 NUEVO
+    admin_email: str | None = None
+    admin_name: str | None = None
+
+    class Config:
+        orm_mode = True
+# --- Users
+class EmployeeCreate(BaseModel):
+    name: str = Field(min_length=2)
+    email: EmailStr
+    password: str = Field(min_length=4)
+    role: Role = Role.EMPLOYEE  # ADMIN o EMPLOYEE (controlado en router)
 
 # --- Products
 class VariantCreate(BaseModel):
