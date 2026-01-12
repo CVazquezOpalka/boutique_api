@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional, List
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import require_tenant_user
-from ..models import Sale, Variant  # ajustá imports si tus modelos cambian
-from pydantic import BaseModel
-from typing import Optional, List
+from ..models import Sale, Variant, PaymentMethod  # ✅ PaymentMethod existe en tu modelo
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
@@ -22,7 +23,6 @@ class SaleCreateIn(BaseModel):
     customer_name: Optional[str] = None
 
     # ✅ opcional para descontar stock en una sola línea
-    # si la UI todavía no manda items, lo dejamos opcional
     variant_id: Optional[int] = None
     quantity: Optional[int] = None
 
@@ -40,6 +40,30 @@ class SaleOut(BaseModel):
         from_attributes = True  # pydantic v2
 
 
+# -------- helpers --------
+
+def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
+    """
+    Convierte string -> Enum PaymentMethod.
+    Acepta:
+      - "EFECTIVO"
+      - "efectivo"
+      - si llega None => EFECTIVO
+    """
+    if not value:
+        return PaymentMethod.EFECTIVO
+
+    v = value.strip().upper()
+    try:
+        return PaymentMethod(v)
+    except Exception:
+        allowed = [pm.value for pm in PaymentMethod]
+        raise HTTPException(
+            status_code=400,
+            detail=f"payment_method inválido. Permitidos: {allowed}",
+        )
+
+
 # -------- Endpoints --------
 
 @router.get("", response_model=List[SaleOut])
@@ -54,14 +78,25 @@ def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
 
 
 @router.post("", response_model=SaleOut)
-def create_sale(payload: SaleCreateIn, db: Session = Depends(get_db), u=Depends(require_tenant_user)):
+def create_sale(
+    payload: SaleCreateIn,
+    db: Session = Depends(get_db),
+    u=Depends(require_tenant_user),
+):
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="El total debe ser mayor a 0.")
 
+    # ✅ payment_method string -> enum
+    pm = _parse_payment_method(payload.payment_method)
+
     # ✅ 1) (Opcional) descontar stock si viene variant_id + quantity
+    items_count = 0
     if payload.variant_id is not None or payload.quantity is not None:
-        if not payload.variant_id or not payload.quantity:
-            raise HTTPException(status_code=400, detail="variant_id y quantity deben venir juntos.")
+        if payload.variant_id is None or payload.quantity is None:
+            raise HTTPException(
+                status_code=400,
+                detail="variant_id y quantity deben venir juntos.",
+            )
         if payload.quantity <= 0:
             raise HTTPException(status_code=400, detail="quantity debe ser > 0.")
 
@@ -72,23 +107,30 @@ def create_sale(payload: SaleCreateIn, db: Session = Depends(get_db), u=Depends(
         )
         if not v:
             raise HTTPException(status_code=404, detail="Variante no encontrada.")
-        if (v.stock or 0) < payload.quantity:
+
+        current_stock = v.stock or 0
+        if current_stock < payload.quantity:
             raise HTTPException(status_code=400, detail="Stock insuficiente para esa variante.")
 
-        v.stock = (v.stock or 0) - payload.quantity
+        v.stock = current_stock - payload.quantity
+        items_count = 1  # MVP: una sola línea (variant_id)
 
     # ✅ 2) crear venta
+    # IMPORTANTE: tu modelo Sale requiere created_by_user_id NOT NULL
     sale = Sale(
         tenant_id=u.tenant_id,
+        created_by_user_id=u.id,        # ✅ FIX REAL
+        payment_method=pm,              # ✅ Enum
         total=payload.total,
-        payment_method=payload.payment_method,
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
         created_at=datetime.utcnow(),
+        discount=0.0,
+        subtotal=payload.total,
+        margin=0.0,
+        items_count=items_count,
+        cash_session_id=None,
     )
-
-    # si tu modelo tiene items_count y querés setearlo:
-    # sale.items_count = 1 if payload.variant_id else 0
 
     db.add(sale)
     db.commit()
