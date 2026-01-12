@@ -106,15 +106,29 @@ class Product(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
     name: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # ✅ NUEVO
+    sku: Mapped[str | None] = mapped_column(String, nullable=True)
+    barcode: Mapped[str | None] = mapped_column(String, nullable=True)
+
     cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     price: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+    # ✅ NUEVO (stock simple para MVP)
+    stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    min_stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
-    variants: Mapped[list["Variant"]] = relationship(back_populates="product", cascade="all, delete-orphan")
-
+    variants: Mapped[list["Variant"]] = relationship(
+        back_populates="product",
+        cascade="all, delete-orphan"
+    )
+    
 class Variant(Base):
     __tablename__ = "variants"
     __table_args__ = (

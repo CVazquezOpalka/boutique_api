@@ -119,3 +119,42 @@ def change_plan(
     db.commit()
     db.refresh(tenant)
     return tenant_out_with_admin(db, tenant)
+
+
+class TenantUpdateIn(BaseModel):
+    is_active: bool | None = None
+
+@router.patch("/{tenant_id}", response_model=TenantOut)
+def update_tenant(
+    tenant_id: int,
+    payload: TenantUpdateIn,
+    db: Session = Depends(get_db),
+    _=Depends(require_roles(Role.SUPER_ADMIN)),
+):
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "Tenant no encontrado")
+
+    if payload.is_active is not None:
+        tenant.is_active = payload.is_active
+
+    if hasattr(tenant, "updated_at"):
+        tenant.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(tenant)
+
+    admin = next((u for u in tenant.users if u.role == Role.ADMIN and u.active), None)
+
+    return TenantOut(
+        id=tenant.id,
+        name=tenant.name,
+        slug=tenant.slug,
+        plan=tenant.plan,
+        trial_end=tenant.trial_end,
+        is_active=tenant.is_active,
+        created_at=tenant.created_at,
+        updated_at=tenant.updated_at,
+        admin_email=admin.email if admin else None,
+        admin_name=admin.name if admin else None,
+    )

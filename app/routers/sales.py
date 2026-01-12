@@ -1,105 +1,96 @@
+from __future__ import annotations
+
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
+
 from ..db import get_db
 from ..deps import require_tenant_user
-from ..models import (
-    Sale, SaleItem, Product, Variant,
-    StockMovement, StockReason,
-    PaymentMethod,
-    CashSession, CashStatus
-)
-from ..schemas import SaleCreate, SaleOut
+from ..models import Sale, Variant  # ajustá imports si tus modelos cambian
+from pydantic import BaseModel
+from typing import Optional, List
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
-@router.get("", response_model=list[SaleOut])
+
+# -------- Schemas (MVP) --------
+class SaleCreateIn(BaseModel):
+    # MVP: venta simple (sin items detallados aún)
+    total: float
+    payment_method: Optional[str] = "EFECTIVO"
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+
+    # ✅ opcional para descontar stock en una sola línea
+    # si la UI todavía no manda items, lo dejamos opcional
+    variant_id: Optional[int] = None
+    quantity: Optional[int] = None
+
+
+class SaleOut(BaseModel):
+    id: int
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    total: float
+    items_count: Optional[int] = None
+    payment_method: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True  # pydantic v2
+
+
+# -------- Endpoints --------
+
+@router.get("", response_model=List[SaleOut])
 def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
-    return (
+    rows = (
         db.query(Sale)
-        .options(joinedload(Sale.items))
         .filter(Sale.tenant_id == u.tenant_id)
         .order_by(Sale.created_at.desc())
         .all()
     )
+    return rows
+
 
 @router.post("", response_model=SaleOut)
-def create_sale(payload: SaleCreate, db: Session = Depends(get_db), u=Depends(require_tenant_user)):
-    if not payload.items:
-        raise HTTPException(400, "Items vacíos")
+def create_sale(payload: SaleCreateIn, db: Session = Depends(get_db), u=Depends(require_tenant_user)):
+    if payload.total <= 0:
+        raise HTTPException(status_code=400, detail="El total debe ser mayor a 0.")
 
-    open_cash = db.query(CashSession).filter(
-        CashSession.tenant_id == u.tenant_id,
-        CashSession.status == CashStatus.OPEN
-    ).first()
+    # ✅ 1) (Opcional) descontar stock si viene variant_id + quantity
+    if payload.variant_id is not None or payload.quantity is not None:
+        if not payload.variant_id or not payload.quantity:
+            raise HTTPException(status_code=400, detail="variant_id y quantity deben venir juntos.")
+        if payload.quantity <= 0:
+            raise HTTPException(status_code=400, detail="quantity debe ser > 0.")
 
-    if payload.payment_method == PaymentMethod.EFECTIVO and not open_cash:
-        raise HTTPException(409, "Debe abrir caja para cobrar en efectivo")
+        v = (
+            db.query(Variant)
+            .filter(Variant.tenant_id == u.tenant_id, Variant.id == payload.variant_id)
+            .first()
+        )
+        if not v:
+            raise HTTPException(status_code=404, detail="Variante no encontrada.")
+        if (v.stock or 0) < payload.quantity:
+            raise HTTPException(status_code=400, detail="Stock insuficiente para esa variante.")
 
-    # Validación + cálculos
-    subtotal = 0.0
-    margin = 0.0
-    resolved = []  # (prod, var, qty)
+        v.stock = (v.stock or 0) - payload.quantity
 
-    for it in payload.items:
-        prod = db.get(Product, it.product_id)
-        if not prod or prod.tenant_id != u.tenant_id:
-            raise HTTPException(404, f"Producto {it.product_id} no encontrado")
-
-        var = db.get(Variant, it.variant_id)
-        if not var or var.tenant_id != u.tenant_id or var.product_id != prod.id:
-            raise HTTPException(404, f"Variante {it.variant_id} no encontrada")
-
-        if var.stock < it.qty:
-            raise HTTPException(409, f"Stock insuficiente para SKU {var.sku}")
-
-        subtotal += it.qty * prod.price
-        margin += it.qty * (prod.price - prod.cost)
-        resolved.append((prod, var, it.qty))
-
-    discount = max(0.0, payload.discount)
-    total = max(0.0, subtotal - discount)
-    margin = margin - discount
-
+    # ✅ 2) crear venta
     sale = Sale(
         tenant_id=u.tenant_id,
-        created_by_user_id=u.id,
+        total=payload.total,
         payment_method=payload.payment_method,
-        discount=discount,
-        subtotal=subtotal,
-        total=total,
-        margin=margin,
-        cash_session_id=open_cash.id if payload.payment_method == PaymentMethod.EFECTIVO else None
+        customer_id=payload.customer_id,
+        customer_name=payload.customer_name,
+        created_at=datetime.utcnow(),
     )
+
+    # si tu modelo tiene items_count y querés setearlo:
+    # sale.items_count = 1 if payload.variant_id else 0
+
     db.add(sale)
-    db.flush()
-
-    for prod, var, qty in resolved:
-        # descontar stock
-        var.stock -= qty
-
-        db.add(SaleItem(
-            sale_id=sale.id,
-            product_id=prod.id,
-            variant_id=var.id,
-            name=prod.name,
-            sku=var.sku,
-            qty=qty,
-            unit_price=prod.price,
-            unit_cost=prod.cost,
-        ))
-
-        db.add(StockMovement(
-            tenant_id=u.tenant_id,
-            created_by_user_id=u.id,
-            product_id=prod.id,
-            variant_id=var.id,
-            delta=-qty,
-            reason=StockReason.VENTA,
-        ))
-
     db.commit()
-    return (
-        db.query(Sale)
-        .options(joinedload(Sale.items))
-        .get(sale.id)
-    )
+    db.refresh(sale)
+    return sale

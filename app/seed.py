@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
+
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from .models import Tenant, User, Role, Product, Variant, PlanType
 from .security import hash_password
@@ -22,13 +23,12 @@ def _sqlite_table_columns(db: Session, table_name: str) -> set[str]:
     return {c[1] for c in cols}  # c[1] = column name
 
 
-def _sqlite_add_missing_tenant_columns(db: Session):
+def _sqlite_add_missing_tenant_columns(db: Session) -> None:
     if not _is_sqlite(db):
         return
 
     existing = _sqlite_table_columns(db, "tenants")
 
-    # Tenants columns
     if "plan" not in existing:
         db.execute(text("ALTER TABLE tenants ADD COLUMN plan VARCHAR(20)"))
     if "trial_end" not in existing:
@@ -40,7 +40,7 @@ def _sqlite_add_missing_tenant_columns(db: Session):
 
     db.commit()
 
-    # Backfill
+    # Backfill tenants
     now = datetime.utcnow().isoformat(sep=" ")
 
     db.execute(text("UPDATE tenants SET plan = 'FREE_TRIAL' WHERE plan IS NULL"))
@@ -61,22 +61,47 @@ def _sqlite_add_missing_tenant_columns(db: Session):
     db.commit()
 
 
-def _sqlite_add_missing_user_columns(db: Session):
+def _sqlite_add_missing_product_columns(db: Session) -> None:
+    """
+    ⚠️ Importante: products y tenants SON TABLAS DISTINTAS.
+    Si no separás esto, te va a volver a tirar duplicate column.
+    """
+    if not _is_sqlite(db):
+        return
+
+    existing = _sqlite_table_columns(db, "products")
+
+    if "sku" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN sku VARCHAR(100)"))
+    if "barcode" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN barcode VARCHAR(100)"))
+    if "stock" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN stock INTEGER"))
+    if "min_stock" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN min_stock INTEGER"))
+
+    db.commit()
+
+    # Backfill products
+    db.execute(text("UPDATE products SET stock = COALESCE(stock, 0)"))
+    db.execute(text("UPDATE products SET min_stock = COALESCE(min_stock, 0)"))
+    db.commit()
+
+
+def _sqlite_add_missing_user_columns(db: Session) -> None:
     if not _is_sqlite(db):
         return
 
     existing = _sqlite_table_columns(db, "users")
 
-    # Users columns (solo las necesarias para tu flujo MVP)
     if "must_change_password" not in existing:
         db.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN"))
     if "updated_at" not in existing:
-        # opcional: si tu modelo User ya tiene updated_at, esto lo crea
         db.execute(text("ALTER TABLE users ADD COLUMN updated_at DATETIME"))
 
     db.commit()
 
-    # Backfill: must_change_password default false, updated_at fallback
+    # Backfill users
     now = datetime.utcnow().isoformat(sep=" ")
     db.execute(text("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"))
     db.execute(text("UPDATE users SET updated_at = COALESCE(updated_at, created_at, :now)"), {"now": now})
@@ -87,24 +112,27 @@ def _sqlite_add_missing_user_columns(db: Session):
 # Seed
 # -----------
 
-def ensure_seed(db: Session):
+def ensure_seed(db: Session) -> None:
     # ✅ 0) Auto-migrate SQLite (MVP)
     _sqlite_add_missing_tenant_columns(db)
+    _sqlite_add_missing_product_columns(db)
     _sqlite_add_missing_user_columns(db)
 
     # --- Superadmin
     super_email = "super@boutiqueos.com"
     super_user = db.query(User).filter(User.email == super_email).first()
     if not super_user:
-        db.add(User(
-            tenant_id=None,
-            role=Role.SUPER_ADMIN,
-            name="Super Admin",
-            email=super_email,
-            password_hash=hash_password("123456"),
-            active=True,
-            must_change_password=False,  # super no necesita cambiar
-        ))
+        db.add(
+            User(
+                tenant_id=None,
+                role=Role.SUPER_ADMIN,
+                name="Super Admin",
+                email=super_email,
+                password_hash=hash_password("123456"),
+                active=True,
+                must_change_password=False,
+            )
+        )
         db.commit()
 
     # --- Tenant base (Boutique Luna)
@@ -123,7 +151,6 @@ def ensure_seed(db: Session):
         db.commit()
         db.refresh(tenant)
     else:
-        # Backfill por si existe viejo
         changed = False
         if getattr(tenant, "plan", None) is None:
             tenant.plan = PlanType.FREE_TRIAL
@@ -142,37 +169,42 @@ def ensure_seed(db: Session):
     admin_email = "admin@luna.com"
     admin_user = db.query(User).filter(User.email == admin_email).first()
     if not admin_user:
-        db.add(User(
-            tenant_id=tenant.id,
-            role=Role.ADMIN,
-            name="Admin Luna",
-            email=admin_email,
-            password_hash=hash_password("123456"),
-            active=True,
-            must_change_password=False,  # en seed no forzamos cambio
-        ))
+        db.add(
+            User(
+                tenant_id=tenant.id,
+                role=Role.ADMIN,
+                name="Admin Luna",
+                email=admin_email,
+                password_hash=hash_password("123456"),
+                active=True,
+                must_change_password=False,
+            )
+        )
         db.commit()
 
     # --- Employee tenant (Luna)
     emp_email = "emp@luna.com"
     emp_user = db.query(User).filter(User.email == emp_email).first()
     if not emp_user:
-        db.add(User(
-            tenant_id=tenant.id,
-            role=Role.EMPLOYEE,
-            name="Empleado 1",
-            email=emp_email,
-            password_hash=hash_password("123456"),
-            active=True,
-            must_change_password=False,
-        ))
+        db.add(
+            User(
+                tenant_id=tenant.id,
+                role=Role.EMPLOYEE,
+                name="Empleado 1",
+                email=emp_email,
+                password_hash=hash_password("123456"),
+                active=True,
+                must_change_password=False,
+            )
+        )
         db.commit()
 
     # --- Producto demo + variantes
-    demo = db.query(Product).filter(
-        Product.tenant_id == tenant.id,
-        Product.name == "Remera básica"
-    ).first()
+    demo = (
+        db.query(Product)
+        .filter(Product.tenant_id == tenant.id, Product.name == "Remera básica")
+        .first()
+    )
 
     if not demo:
         p = Product(
@@ -181,15 +213,22 @@ def ensure_seed(db: Session):
             category="Remeras",
             cost=4500,
             price=12000,
-            active=True
+            active=True,
+            # si tu tabla products tiene stock/min_stock, podemos setearlos:
+            # stock=15,
+            # min_stock=3,
+            # sku="REM-BASICA",
+            # barcode="7501234567890",
         )
         db.add(p)
         db.commit()
         db.refresh(p)
 
-        db.add_all([
-            Variant(tenant_id=tenant.id, product_id=p.id, size="S", color="Negro",  sku="REM-S-NEG", stock=8, min_stock=3),
-            Variant(tenant_id=tenant.id, product_id=p.id, size="M", color="Negro",  sku="REM-M-NEG", stock=5, min_stock=3),
-            Variant(tenant_id=tenant.id, product_id=p.id, size="L", color="Blanco", sku="REM-L-BLA", stock=2, min_stock=3),
-        ])
+        db.add_all(
+            [
+                Variant(tenant_id=tenant.id, product_id=p.id, size="S", color="Negro",  sku="REM-S-NEG", stock=8, min_stock=3),
+                Variant(tenant_id=tenant.id, product_id=p.id, size="M", color="Negro",  sku="REM-M-NEG", stock=5, min_stock=3),
+                Variant(tenant_id=tenant.id, product_id=p.id, size="L", color="Blanco", sku="REM-L-BLA", stock=2, min_stock=3),
+            ]
+        )
         db.commit()

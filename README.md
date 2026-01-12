@@ -448,3 +448,20 @@ Si querés, próximo paso puedo:
 - o armar el **mensaje comercial + pricing** para cerrar los 5 clientes
 
 Decime cómo seguimos 💪
+
+
+
+lo que nos esta faltando hoy 
+Lo dejamos explícito para no dispersarnos:
+
+❌ Reset password
+
+❌ Cambio de plan (UI + lógica de billing)
+
+❌ Emails / templates
+
+❌ Autenticación avanzada
+
+❌ Clientes del tenant en superadmin
+
+Todo eso mañana o después, con cabeza fresca.
