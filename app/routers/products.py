@@ -8,6 +8,7 @@ from ..schemas import ProductCreate, ProductOut, ProductUpdate, VariantUpdate
 
 router = APIRouter(prefix="/products", tags=["products"])
 
+
 @router.get("", response_model=list[ProductOut])
 def list_products(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
     return (
@@ -18,78 +19,73 @@ def list_products(db: Session = Depends(get_db), u=Depends(require_tenant_user))
         .all()
     )
 
+
 @router.get("/search")
-def search_products(q: str, db: Session = Depends(get_db), u=Depends(require_tenant_user)):
+def search_products(
+    q: str,
+    db: Session = Depends(get_db),
+    u=Depends(require_tenant_user),
+):
     qn = q.strip()
     if not qn:
         return []
 
-    # Busca por nombre, categoría o SKU (join variants)
     products = (
         db.query(Product)
         .options(joinedload(Product.variants))
-        .join(Variant, Variant.product_id == Product.id, isouter=True)
+        .outerjoin(Variant, Variant.product_id == Product.id)
         .filter(Product.tenant_id == u.tenant_id)
-        .filter(or_(
-            Product.name.ilike(f"%{qn}%"),
-            Product.category.ilike(f"%{qn}%"),
-            Variant.sku.ilike(f"%{qn}%"),
-        ))
+        .filter(
+            or_(
+                # Producto
+                Product.name.ilike(f"%{qn}%"),
+                Product.sku.ilike(f"%{qn}%"),
+                Product.barcode.ilike(f"%{qn}%"),
+                # Variante
+                Variant.sku.ilike(f"%{qn}%"),
+                # Variant.barcode.ilike(f"%{qn}%"),  # si existe en el modelo
+            )
+        )
+        .distinct(Product.id)  # ✅ evita duplicados por JOIN
         .order_by(Product.created_at.desc())
         .limit(50)
         .all()
     )
 
-    # respuesta “liviana” para autocomplete
-    out = []
-    for p in products:
-        out.append({
-            "id": p.id,
-            "name": p.name,
-            "category": p.category,
-            "price": p.price,
-            "active": p.active,
-            "variants": [{"id": v.id, "sku": v.sku, "size": v.size, "color": v.color, "stock": v.stock} for v in p.variants],
-        })
-    return out
+    return products
+
 
 @router.post("", response_model=ProductOut)
-def create_product(payload: ProductCreate, db: Session = Depends(get_db), admin=Depends(require_roles(Role.ADMIN))):
+def create_product(
+    payload: ProductCreate,
+    db: Session = Depends(get_db),
+    admin=Depends(require_roles(Role.ADMIN)),
+):
     p = Product(
         tenant_id=admin.tenant_id,
         name=payload.name.strip(),
         category=payload.category,
-        cost=payload.cost,
-        price=payload.price,
+        sku=(payload.sku or None),
+        barcode=(payload.barcode or None),
+        stock=payload.stock or 0,
+        min_stock=payload.min_stock or 0,
+        cost=payload.cost or 0,
+        price=payload.price or 0,
         active=payload.active,
     )
     db.add(p)
-    db.flush()
-
-    for v in payload.variants:
-        sku = v.sku.strip()
-        if db.query(Variant).filter(Variant.tenant_id == admin.tenant_id, Variant.sku == sku).first():
-            raise HTTPException(409, f"SKU duplicado: {sku}")
-
-        db.add(Variant(
-            tenant_id=admin.tenant_id,
-            product_id=p.id,
-            size=v.size.strip(),
-            color=v.color.strip(),
-            sku=sku,
-            stock=v.stock,
-            min_stock=v.min_stock,
-        ))
-
     db.commit()
-    return (
-        db.query(Product)
-        .options(joinedload(Product.variants))
-        .get(p.id)
-    )
+    db.refresh(p)
+    return p
+
 
 @router.patch("/{product_id}", response_model=ProductOut)
-def update_product(product_id: int, payload: ProductUpdate, db: Session = Depends(get_db), admin=Depends(require_roles(Role.ADMIN))):
+def update_product(
+    product_id: int,
+    payload: ProductUpdate,
+    db: Session = Depends(get_db),
+    admin=Depends(require_roles(Role.ADMIN)),
+):
     p = db.get(Product, product_id)
     if not p or p.tenant_id != admin.tenant_id:
         raise HTTPException(404, "Producto no encontrado")
@@ -98,6 +94,17 @@ def update_product(product_id: int, payload: ProductUpdate, db: Session = Depend
         p.name = payload.name.strip()
     if payload.category is not None:
         p.category = payload.category
+
+    # ✅ NUEVO
+    if payload.sku is not None:
+        p.sku = payload.sku or None
+    if payload.barcode is not None:
+        p.barcode = payload.barcode or None
+    if payload.stock is not None:
+        p.stock = int(payload.stock)
+    if payload.min_stock is not None:
+        p.min_stock = int(payload.min_stock)
+
     if payload.cost is not None:
         p.cost = float(payload.cost)
     if payload.price is not None:
@@ -106,14 +113,17 @@ def update_product(product_id: int, payload: ProductUpdate, db: Session = Depend
         p.active = bool(payload.active)
 
     db.commit()
-    return (
-        db.query(Product)
-        .options(joinedload(Product.variants))
-        .get(p.id)
-    )
+
+    return db.query(Product).options(joinedload(Product.variants)).get(p.id)
+
 
 @router.patch("/variants/{variant_id}")
-def update_variant(variant_id: int, payload: VariantUpdate, db: Session = Depends(get_db), u=Depends(require_tenant_user)):
+def update_variant(
+    variant_id: int,
+    payload: VariantUpdate,
+    db: Session = Depends(get_db),
+    u=Depends(require_tenant_user),
+):
     # admin y employee pueden: stock/min_stock
     # solo admin puede: sku/size/color (para evitar quilombo)
     v = db.get(Variant, variant_id)
@@ -137,13 +147,25 @@ def update_variant(variant_id: int, payload: VariantUpdate, db: Session = Depend
             v.color = payload.color.strip()
         if payload.sku is not None:
             sku = payload.sku.strip()
-            exists = db.query(Variant).filter(Variant.tenant_id == u.tenant_id, Variant.sku == sku, Variant.id != v.id).first()
+            exists = (
+                db.query(Variant)
+                .filter(
+                    Variant.tenant_id == u.tenant_id,
+                    Variant.sku == sku,
+                    Variant.id != v.id,
+                )
+                .first()
+            )
             if exists:
                 raise HTTPException(409, "SKU duplicado")
             v.sku = sku
     else:
         # employee no puede tocar identidad SKU/talle/color
-        if payload.size is not None or payload.color is not None or payload.sku is not None:
+        if (
+            payload.size is not None
+            or payload.color is not None
+            or payload.sku is not None
+        ):
             raise HTTPException(403, "Solo admin puede editar SKU/talle/color")
 
     db.commit()

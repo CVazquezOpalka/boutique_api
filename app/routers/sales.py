@@ -9,21 +9,25 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import require_tenant_user
-from ..models import Sale, Variant, PaymentMethod, CashSession, CashStatus
+from ..models import (
+    Sale,
+    Variant,
+    PaymentMethod,
+    Product
+), CashSession, CashStatus
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
 
 # -------- Schemas (MVP) --------
 class SaleCreateIn(BaseModel):
-    # MVP: venta simple (sin items detallados aún)
     total: float
     payment_method: Optional[str] = "EFECTIVO"
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
 
-    # ✅ opcional para descontar stock en una sola línea
-    variant_id: Optional[int] = None
+    # ✅ MVP: descontar stock de Product
+    product_id: Optional[int] = None
     quantity: Optional[int] = None
 
 
@@ -41,6 +45,7 @@ class SaleOut(BaseModel):
 
 
 # -------- helpers --------
+
 
 
 def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
@@ -66,6 +71,7 @@ def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
 
 
 # -------- Endpoints --------
+
 
 
 @router.get("", response_model=List[SaleOut])
@@ -97,9 +103,9 @@ def create_sale(
         if payload.quantity <= 0:
             raise HTTPException(status_code=400, detail="quantity debe ser > 0.")
 
-        v = (
-            db.query(Variant)
-            .filter(Variant.tenant_id == u.tenant_id, Variant.id == payload.variant_id)
+        p = (
+            db.query(Product)
+            .filter(Product.tenant_id == u.tenant_id, Product.id == payload.product_id)
             .first()
         )
         if not v:
@@ -129,6 +135,8 @@ def create_sale(
         created_by_user_id=u.id,
         payment_method=pm,
         total=payload.total,
+        payment_method=payload.payment_method,
+        # si tu Sale ya NO tiene customer_id/customer_name, sacalo
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
         created_at=datetime.utcnow(),
