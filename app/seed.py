@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .models import Tenant, User, Role, Product, Variant, PlanType
+from .models import Tenant, User, Role, Product, PlanType
 from .security import hash_password
 
 
@@ -63,8 +63,7 @@ def _sqlite_add_missing_tenant_columns(db: Session) -> None:
 
 def _sqlite_add_missing_product_columns(db: Session) -> None:
     """
-    ⚠️ Importante: products y tenants SON TABLAS DISTINTAS.
-    Si no separás esto, te va a volver a tirar duplicate column.
+    Products MVP: sku/barcode/stock/min_stock.
     """
     if not _is_sqlite(db):
         return
@@ -108,6 +107,41 @@ def _sqlite_add_missing_user_columns(db: Session) -> None:
     db.commit()
 
 
+def _sqlite_add_missing_cash_columns(db: Session) -> None:
+    """
+    Solo si tu CashSession fue creciendo (withdrawal/expected/difference/closed_by).
+    Si tu tabla cash_sessions todavía no existe o no tiene estos campos, esto evita el crash.
+    """
+    if not _is_sqlite(db):
+        return
+
+    # si la tabla no existe, no hacemos nada (tu create_all la crea al inicio)
+    try:
+        existing = _sqlite_table_columns(db, "cash_sessions")
+    except Exception:
+        return
+
+    # Campos "nuevos" típicos del cierre automático
+    if "withdrawal_amount" not in existing:
+        db.execute(text("ALTER TABLE cash_sessions ADD COLUMN withdrawal_amount FLOAT"))
+    if "withdrawal_notes" not in existing:
+        db.execute(text("ALTER TABLE cash_sessions ADD COLUMN withdrawal_notes TEXT"))
+    if "expected_amount" not in existing:
+        db.execute(text("ALTER TABLE cash_sessions ADD COLUMN expected_amount FLOAT"))
+    if "difference_amount" not in existing:
+        db.execute(text("ALTER TABLE cash_sessions ADD COLUMN difference_amount FLOAT"))
+    if "closed_by_user_id" not in existing:
+        db.execute(text("ALTER TABLE cash_sessions ADD COLUMN closed_by_user_id INTEGER"))
+
+    db.commit()
+
+    # Backfill defaults
+    db.execute(text("UPDATE cash_sessions SET withdrawal_amount = COALESCE(withdrawal_amount, 0)"))
+    db.execute(text("UPDATE cash_sessions SET expected_amount = COALESCE(expected_amount, 0)"))
+    db.execute(text("UPDATE cash_sessions SET difference_amount = COALESCE(difference_amount, 0)"))
+    db.commit()
+
+
 # -----------
 # Seed
 # -----------
@@ -117,6 +151,7 @@ def ensure_seed(db: Session) -> None:
     _sqlite_add_missing_tenant_columns(db)
     _sqlite_add_missing_product_columns(db)
     _sqlite_add_missing_user_columns(db)
+    _sqlite_add_missing_cash_columns(db)
 
     # --- Superadmin
     super_email = "super@boutiqueos.com"
@@ -199,7 +234,7 @@ def ensure_seed(db: Session) -> None:
         )
         db.commit()
 
-    # --- Producto demo + variantes
+    # --- Producto demo (SIN variantes)
     demo = (
         db.query(Product)
         .filter(Product.tenant_id == tenant.id, Product.name == "Remera básica")
@@ -211,24 +246,13 @@ def ensure_seed(db: Session) -> None:
             tenant_id=tenant.id,
             name="Remera básica",
             category="Remeras",
+            sku="REM-BASICA",
+            barcode="7501234567890",
+            stock=15,
+            min_stock=3,
             cost=4500,
             price=12000,
             active=True,
-            # si tu tabla products tiene stock/min_stock, podemos setearlos:
-            # stock=15,
-            # min_stock=3,
-            # sku="REM-BASICA",
-            # barcode="7501234567890",
         )
         db.add(p)
-        db.commit()
-        db.refresh(p)
-
-        db.add_all(
-            [
-                Variant(tenant_id=tenant.id, product_id=p.id, size="S", color="Negro",  sku="REM-S-NEG", stock=8, min_stock=3),
-                Variant(tenant_id=tenant.id, product_id=p.id, size="M", color="Negro",  sku="REM-M-NEG", stock=5, min_stock=3),
-                Variant(tenant_id=tenant.id, product_id=p.id, size="L", color="Blanco", sku="REM-L-BLA", stock=2, min_stock=3),
-            ]
-        )
         db.commit()
