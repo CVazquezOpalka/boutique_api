@@ -119,7 +119,32 @@ class CashOpenIn(BaseModel):
 
 
 class CashCloseIn(BaseModel):
-    closing_amount: float
+    # ✅ opcional: si no lo mandan, asumimos que el cierre = expected_amount
+    counted_amount: float | None = None
+
+    # ✅ egreso opcional antes de cerrar
+    withdrawal_amount: float = 0
+    withdrawal_notes: str | None = None
+
+
+class CashOpenOut(BaseModel):
+    id: int
+    tenant_id: int
+    opened_by_user_id: int
+    opened_at: datetime
+    opening_amount: float
+    status: CashStatus
+
+    cash_amount: float
+    card_amount: float
+    other_amount: float
+    total_sales_amount: float
+    withdrawal_amount: float
+    expected_amount: float
+    by_payment_method: dict
+
+    class Config:
+        from_attributes = True
 
 
 class CashOut(BaseModel):
@@ -129,8 +154,6 @@ class CashOut(BaseModel):
     opened_at: datetime
     opening_amount: float
     status: CashStatus
-    closed_at: Optional[datetime] = None
-    closing_amount: Optional[float] = None
 
 
 # --- Sales

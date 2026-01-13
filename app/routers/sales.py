@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import require_tenant_user
-from ..models import Sale, Variant, PaymentMethod  # ✅ PaymentMethod existe en tu modelo
+from ..models import Sale, Variant, PaymentMethod, CashSession, CashStatus
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
@@ -42,6 +42,7 @@ class SaleOut(BaseModel):
 
 # -------- helpers --------
 
+
 def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
     """
     Convierte string -> Enum PaymentMethod.
@@ -66,6 +67,7 @@ def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
 
 # -------- Endpoints --------
 
+
 @router.get("", response_model=List[SaleOut])
 def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
     rows = (
@@ -79,23 +81,18 @@ def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
 
 @router.post("", response_model=SaleOut)
 def create_sale(
-    payload: SaleCreateIn,
-    db: Session = Depends(get_db),
-    u=Depends(require_tenant_user),
+    payload: SaleCreateIn, db: Session = Depends(get_db), u=Depends(require_tenant_user)
 ):
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="El total debe ser mayor a 0.")
 
-    # ✅ payment_method string -> enum
     pm = _parse_payment_method(payload.payment_method)
 
-    # ✅ 1) (Opcional) descontar stock si viene variant_id + quantity
     items_count = 0
     if payload.variant_id is not None or payload.quantity is not None:
         if payload.variant_id is None or payload.quantity is None:
             raise HTTPException(
-                status_code=400,
-                detail="variant_id y quantity deben venir juntos.",
+                status_code=400, detail="variant_id y quantity deben venir juntos."
             )
         if payload.quantity <= 0:
             raise HTTPException(status_code=400, detail="quantity debe ser > 0.")
@@ -110,17 +107,27 @@ def create_sale(
 
         current_stock = v.stock or 0
         if current_stock < payload.quantity:
-            raise HTTPException(status_code=400, detail="Stock insuficiente para esa variante.")
+            raise HTTPException(
+                status_code=400, detail="Stock insuficiente para esa variante."
+            )
 
         v.stock = current_stock - payload.quantity
-        items_count = 1  # MVP: una sola línea (variant_id)
+        items_count = 1
 
-    # ✅ 2) crear venta
-    # IMPORTANTE: tu modelo Sale requiere created_by_user_id NOT NULL
+    # ✅ buscar caja abierta del tenant (si existe)
+    open_cash = (
+        db.query(CashSession)
+        .filter(
+            CashSession.tenant_id == u.tenant_id, CashSession.status == CashStatus.OPEN
+        )
+        .order_by(CashSession.opened_at.desc())
+        .first()
+    )
+
     sale = Sale(
         tenant_id=u.tenant_id,
-        created_by_user_id=u.id,        # ✅ FIX REAL
-        payment_method=pm,              # ✅ Enum
+        created_by_user_id=u.id,
+        payment_method=pm,
         total=payload.total,
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
@@ -129,7 +136,8 @@ def create_sale(
         subtotal=payload.total,
         margin=0.0,
         items_count=items_count,
-        cash_session_id=None,
+        # ✅ link real
+        cash_session_id=open_cash.id if open_cash else None,
     )
 
     db.add(sale)

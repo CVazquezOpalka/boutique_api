@@ -187,18 +187,22 @@ class CashSession(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    opened_by_user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=False
-    )
-    opened_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
-    )
+
+    opened_by_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     opening_amount: Mapped[float] = mapped_column(Float, default=0, nullable=False)
 
-    status: Mapped[CashStatus] = mapped_column(
-        Enum(CashStatus), default=CashStatus.OPEN, nullable=False
-    )
+    status: Mapped[CashStatus] = mapped_column(Enum(CashStatus), default=CashStatus.OPEN, nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # ✅ NUEVO: cierre y control
+    closed_by_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    withdrawal_amount: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    withdrawal_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    expected_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    difference_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     closing_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
