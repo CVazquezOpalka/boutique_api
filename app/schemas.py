@@ -86,9 +86,18 @@ class VariantCreate(BaseModel):
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2)
     category: Optional[str] = None
+
+    # ✅ MVP SIMPLE (lo que usa tu UI hoy)
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    stock: int = 0
+    min_stock: int = 0
+
     cost: float = 0
     price: float = 0
     active: bool = True
+
+    # opcional (no lo uses aún si no querés)
     variants: List[VariantCreate] = []
 
 
@@ -106,11 +115,21 @@ class ProductOut(BaseModel):
     tenant_id: int
     name: str
     category: Optional[str]
+
+    # ✅ devolverlos al frontend
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    stock: int
+    min_stock: int
+
     cost: float
     price: float
     active: bool
     created_at: datetime
-    variants: List[VariantOut]
+    variants: List[VariantOut] = []
+
+    class Config:
+        from_attributes = True
 
 
 # --- Cash
@@ -206,6 +225,10 @@ class ProductUpdate(BaseModel):
     cost: Optional[float] = None
     price: Optional[float] = None
     active: Optional[bool] = None
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    stock: Optional[int] = None
+    min_stock: Optional[int] = None
 
 
 class VariantUpdate(BaseModel):

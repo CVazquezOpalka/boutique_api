@@ -9,21 +9,25 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import require_tenant_user
-from ..models import Sale, Variant, PaymentMethod  # ✅ PaymentMethod existe en tu modelo
+from ..models import (
+    Sale,
+    Variant,
+    PaymentMethod,
+    Product
+)  # ✅ PaymentMethod existe en tu modelo
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
 
 # -------- Schemas (MVP) --------
 class SaleCreateIn(BaseModel):
-    # MVP: venta simple (sin items detallados aún)
     total: float
     payment_method: Optional[str] = "EFECTIVO"
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
 
-    # ✅ opcional para descontar stock en una sola línea
-    variant_id: Optional[int] = None
+    # ✅ MVP: descontar stock de Product
+    product_id: Optional[int] = None
     quantity: Optional[int] = None
 
 
@@ -41,6 +45,7 @@ class SaleOut(BaseModel):
 
 
 # -------- helpers --------
+
 
 def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
     """
@@ -66,6 +71,7 @@ def _parse_payment_method(value: Optional[str]) -> PaymentMethod:
 
 # -------- Endpoints --------
 
+
 @router.get("", response_model=List[SaleOut])
 def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
     rows = (
@@ -79,57 +85,42 @@ def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
 
 @router.post("", response_model=SaleOut)
 def create_sale(
-    payload: SaleCreateIn,
-    db: Session = Depends(get_db),
-    u=Depends(require_tenant_user),
+    payload: SaleCreateIn, db: Session = Depends(get_db), u=Depends(require_tenant_user)
 ):
     if payload.total <= 0:
         raise HTTPException(status_code=400, detail="El total debe ser mayor a 0.")
 
-    # ✅ payment_method string -> enum
-    pm = _parse_payment_method(payload.payment_method)
-
-    # ✅ 1) (Opcional) descontar stock si viene variant_id + quantity
-    items_count = 0
-    if payload.variant_id is not None or payload.quantity is not None:
-        if payload.variant_id is None or payload.quantity is None:
+    # ✅ descontar stock si viene product_id + quantity
+    if payload.product_id is not None or payload.quantity is not None:
+        if not payload.product_id or not payload.quantity:
             raise HTTPException(
-                status_code=400,
-                detail="variant_id y quantity deben venir juntos.",
+                status_code=400, detail="product_id y quantity deben venir juntos."
             )
         if payload.quantity <= 0:
             raise HTTPException(status_code=400, detail="quantity debe ser > 0.")
 
-        v = (
-            db.query(Variant)
-            .filter(Variant.tenant_id == u.tenant_id, Variant.id == payload.variant_id)
+        p = (
+            db.query(Product)
+            .filter(Product.tenant_id == u.tenant_id, Product.id == payload.product_id)
             .first()
         )
-        if not v:
-            raise HTTPException(status_code=404, detail="Variante no encontrada.")
+        if not p:
+            raise HTTPException(status_code=404, detail="Producto no encontrado.")
+        if (p.stock or 0) < payload.quantity:
+            raise HTTPException(
+                status_code=400, detail="Stock insuficiente para ese producto."
+            )
 
-        current_stock = v.stock or 0
-        if current_stock < payload.quantity:
-            raise HTTPException(status_code=400, detail="Stock insuficiente para esa variante.")
+        p.stock = (p.stock or 0) - payload.quantity
 
-        v.stock = current_stock - payload.quantity
-        items_count = 1  # MVP: una sola línea (variant_id)
-
-    # ✅ 2) crear venta
-    # IMPORTANTE: tu modelo Sale requiere created_by_user_id NOT NULL
     sale = Sale(
         tenant_id=u.tenant_id,
-        created_by_user_id=u.id,        # ✅ FIX REAL
-        payment_method=pm,              # ✅ Enum
+        created_by_user_id=u.id,  # ✅ CLAVE
         total=payload.total,
+        payment_method=payload.payment_method,
+        # si tu Sale ya NO tiene customer_id/customer_name, sacalo
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
-        created_at=datetime.utcnow(),
-        discount=0.0,
-        subtotal=payload.total,
-        margin=0.0,
-        items_count=items_count,
-        cash_session_id=None,
     )
 
     db.add(sale)
