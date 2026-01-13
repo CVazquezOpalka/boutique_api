@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from ..db import get_db
 from ..deps import require_roles
 from ..models import Tenant, Role, User, PlanType
-from ..schemas import TenantCreate, TenantOut
+from ..schemas import TenantCreate, TenantOut, TenantUpdateIn
 from ..security import hash_password
 
 router = APIRouter(prefix="/super/tenants", tags=["super-tenants"])
@@ -121,9 +121,6 @@ def change_plan(
     return tenant_out_with_admin(db, tenant)
 
 
-class TenantUpdateIn(BaseModel):
-    is_active: bool | None = None
-
 @router.patch("/{tenant_id}", response_model=TenantOut)
 def update_tenant(
     tenant_id: int,
@@ -137,6 +134,14 @@ def update_tenant(
 
     if payload.is_active is not None:
         tenant.is_active = payload.is_active
+
+    if payload.plan is not None:
+        tenant.plan = payload.plan
+        tenant.trial_end = (
+            None
+            if payload.plan != PlanType.FREE_TRIAL
+            else datetime.utcnow() + timedelta(days=15)
+        )
 
     if hasattr(tenant, "updated_at"):
         tenant.updated_at = datetime.utcnow()

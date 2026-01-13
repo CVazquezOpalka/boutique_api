@@ -61,6 +61,11 @@ class TenantOut(BaseModel):
         orm_mode = True
 
 
+class TenantUpdateIn(BaseModel):
+    is_active: bool | None = None
+    plan: PlanType | None = None
+
+
 # --- Users
 class EmployeeCreate(BaseModel):
     name: str = Field(min_length=2)
