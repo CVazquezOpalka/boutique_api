@@ -27,28 +27,9 @@ class SaleCreateIn(BaseModel):
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
 
-    # ✅ nuevo formato (lovable)
-    items: Optional[List[SaleItemIn]] = None
-
-    # ✅ formato legacy (por si algún lado lo usa)
     product_id: Optional[int] = None
     code: Optional[str] = None
-    quantity: Optional[int] = None
-
-
-class SaleCreateIn(BaseModel):
-    payment_method: Optional[str] = "EFECTIVO"
-    customer_id: Optional[int] = None
-    customer_name: Optional[str] = None
-
-    # producto
-    product_id: Optional[int] = None
-    code: Optional[str] = None  # barcode o sku
-    quantity: int  # requerido
-
-    # opcional: si querés permitir override manual (pero mejor no)
-    total: Optional[float] = None
-
+    quantity: int
 
 class SaleOut(BaseModel):
     id: int
@@ -68,7 +49,6 @@ class SaleOut(BaseModel):
 
     class Config:
         from_attributes = True
-
 
 # -------- helpers --------
 def _find_product_by_code(db: Session, tenant_id: int, code: str) -> Product | None:
@@ -106,92 +86,81 @@ def list_sales(db: Session = Depends(get_db), u=Depends(require_tenant_user)):
 
 @router.post("", response_model=SaleOut)
 def create_sale(
-    payload: SaleCreateIn, db: Session = Depends(get_db), u=Depends(require_tenant_user)
+    payload: SaleCreateIn,
+    db: Session = Depends(get_db),
+    u=Depends(require_tenant_user),
 ):
-    if payload.total is None or float(payload.total) <= 0:
+    if payload.total <= 0:
         raise HTTPException(400, "El total debe ser mayor a 0.")
 
-    # ✅ exigir caja abierta
+    if payload.quantity is None or payload.quantity <= 0:
+        raise HTTPException(400, "quantity es requerido y debe ser > 0")
+
+    pm = _parse_payment_method(payload.payment_method)
+
+    # 🔍 Resolver producto
+    product: Product | None = None
+
+    if payload.product_id:
+        product = (
+            db.query(Product)
+            .filter(
+                Product.id == payload.product_id,
+                Product.tenant_id == u.tenant_id,
+                Product.active == True,
+            )
+            .first()
+        )
+    elif payload.code:
+        product = _find_product_by_code(db, u.tenant_id, payload.code)
+
+    if not product:
+        raise HTTPException(404, "Producto no encontrado")
+
+    # 📦 Stock
+    if product.stock < payload.quantity:
+        raise HTTPException(
+            409,
+            f"Stock insuficiente. Disponible: {product.stock}",
+        )
+
+    product.stock -= payload.quantity
+
+    # 💰 Caja abierta
     open_cash = (
         db.query(CashSession)
         .filter(
-            CashSession.tenant_id == u.tenant_id, CashSession.status == CashStatus.OPEN
+            CashSession.tenant_id == u.tenant_id,
+            CashSession.status == CashStatus.OPEN,
         )
         .order_by(CashSession.opened_at.desc())
         .first()
     )
+
     if not open_cash:
         raise HTTPException(
-            409, "No hay una caja abierta. Abrí caja para registrar ventas."
+            409,
+            "No hay una caja abierta. Debes abrir la caja para registrar ventas.",
         )
 
-    pm = _parse_payment_method(payload.payment_method)
-
-    item_product_id = None
-    item_qty = None
-    item_unit_price = None
-
-    if payload.items and len(payload.items) > 0:
-        it = payload.items[0]
-        item_product_id = it.product_id
-        item_qty = it.quantity
-        item_unit_price = it.unit_price
-    else:
-        item_product_id = payload.product_id
-        item_qty = payload.quantity
-
-    if not item_qty or int(item_qty) <= 0:
-        raise HTTPException(400, "quantity es requerido y debe ser > 0.")
-
-    # ✅ encontrar producto (por id o code)
-    p = None
-    if item_product_id is not None:
-        p = (
-            db.query(Product)
-            .filter(Product.tenant_id == u.tenant_id, Product.id == item_product_id)
-            .first()
-        )
-    elif payload.code:
-        p = _find_product_by_code(db, u.tenant_id, payload.code)
-
-    if not p:
-        raise HTTPException(404, "Producto no encontrado.")
-
-    # ✅ precio unitario: si no lo manda FE, usamos Product.price
-    unit_price = (
-        float(item_unit_price) if item_unit_price is not None else float(p.price or 0)
-    )
-
-    # ✅ stock
-    qty = int(item_qty)
-    if (p.stock or 0) < qty:
-        raise HTTPException(400, "Stock insuficiente para ese producto.")
-    p.stock = int(p.stock or 0) - qty
-
-    # ✅ snapshot producto en la venta (para tabla y reportes)
+    # 🧾 Crear venta
     sale = Sale(
         tenant_id=u.tenant_id,
         created_by_user_id=u.id,
-        created_at=datetime.utcnow(),
-        payment_method=pm,
-        total=float(payload.total),
-        subtotal=float(payload.total),
-        discount=0.0,
-        margin=0.0,
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
-        items_count=1,
+        payment_method=pm,
+        subtotal=payload.total,
+        total=payload.total,
+        discount=0.0,
+        margin=0.0,
+        items_count=payload.quantity,
         cash_session_id=open_cash.id,
-        # ⬇️ estas columnas deben existir (migración)
-        product_id=p.id,
-        product_name=p.name,
-        product_barcode=p.barcode,
-        product_sku=p.sku,
-        quantity=qty,
-        unit_price=unit_price,
+        created_at=datetime.utcnow(),
     )
 
     db.add(sale)
     db.commit()
     db.refresh(sale)
+
     return sale
