@@ -138,14 +138,17 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # ✅ NUEVO
-    sku: Mapped[str | None] = mapped_column(String, nullable=True)
-    barcode: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ✅ NUEVO (Lovable UI)
+    brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    barcode: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     price: Mapped[float] = mapped_column(Float, default=0, nullable=False)
 
-    # ✅ NUEVO (stock simple para MVP)
     stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     min_stock: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
@@ -154,6 +157,7 @@ class Product(Base):
         DateTime, default=datetime.utcnow, nullable=False
     )
 
+    # ✅ por ahora lo dejamos, pero la UI NO lo usa
     variants: Mapped[list["Variant"]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )
@@ -188,15 +192,23 @@ class CashSession(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    opened_by_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
-    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    opened_by_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
     opening_amount: Mapped[float] = mapped_column(Float, default=0, nullable=False)
 
-    status: Mapped[CashStatus] = mapped_column(Enum(CashStatus), default=CashStatus.OPEN, nullable=False)
+    status: Mapped[CashStatus] = mapped_column(
+        Enum(CashStatus), default=CashStatus.OPEN, nullable=False
+    )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # ✅ NUEVO: cierre y control
-    closed_by_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    closed_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
     withdrawal_amount: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     withdrawal_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
@@ -242,6 +254,15 @@ class Sale(Base):
 
     # ✅ Cache del conteo de items (opcional, te sirve para listar rápido)
     items_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    product_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("products.id"), nullable=True
+    )
+    product_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    product_barcode: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    product_sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     items: Mapped[list["SaleItem"]] = relationship(
         back_populates="sale",

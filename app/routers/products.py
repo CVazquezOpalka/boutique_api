@@ -65,13 +65,16 @@ def create_product(
         tenant_id=admin.tenant_id,
         name=payload.name.strip(),
         category=payload.category,
-        sku=(payload.sku or None),
-        barcode=(payload.barcode or None),
-        stock=payload.stock or 0,
-        min_stock=payload.min_stock or 0,
-        cost=payload.cost or 0,
-        price=payload.price or 0,
-        active=payload.active,
+        brand=(payload.brand.strip() if payload.brand else None),
+        description=(payload.description.strip() if payload.description else None),
+        size=(payload.size.strip() if payload.size else None),
+        sku=(payload.sku.strip() if payload.sku else None),
+        barcode=(payload.barcode.strip() if payload.barcode else None),
+        stock=int(payload.stock or 0),
+        min_stock=int(payload.min_stock or 0),
+        cost=float(payload.cost or 0),
+        price=float(payload.price or 0),
+        active=bool(payload.active),
     )
     db.add(p)
     db.commit()
@@ -95,11 +98,18 @@ def update_product(
     if payload.category is not None:
         p.category = payload.category
 
-    # ✅ NUEVO
+    if payload.brand is not None:
+        p.brand = payload.brand.strip() if payload.brand else None
+    if payload.description is not None:
+        p.description = payload.description.strip() if payload.description else None
+    if payload.size is not None:
+        p.size = payload.size.strip() if payload.size else None
+
     if payload.sku is not None:
-        p.sku = payload.sku or None
+        p.sku = payload.sku.strip() if payload.sku else None
     if payload.barcode is not None:
-        p.barcode = payload.barcode or None
+        p.barcode = payload.barcode.strip() if payload.barcode else None
+
     if payload.stock is not None:
         p.stock = int(payload.stock)
     if payload.min_stock is not None:
@@ -113,8 +123,8 @@ def update_product(
         p.active = bool(payload.active)
 
     db.commit()
-
-    return db.query(Product).options(joinedload(Product.variants)).get(p.id)
+    db.refresh(p)
+    return p
 
 
 @router.patch("/variants/{variant_id}")

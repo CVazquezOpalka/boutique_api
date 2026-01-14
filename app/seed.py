@@ -13,6 +13,7 @@ from .security import hash_password
 # SQLite MVP auto-migrations
 # -------------------------
 
+
 def _is_sqlite(db: Session) -> bool:
     dialect = db.bind.dialect.name if db.bind else ""
     return dialect == "sqlite"
@@ -21,6 +22,37 @@ def _is_sqlite(db: Session) -> bool:
 def _sqlite_table_columns(db: Session, table_name: str) -> set[str]:
     cols = db.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
     return {c[1] for c in cols}  # c[1] = column name
+
+
+def _sqlite_add_missing_product_columns(db: Session) -> None:
+    if not _is_sqlite(db):
+        return
+
+    existing = _sqlite_table_columns(db, "products")
+
+    # ya tenías
+    if "sku" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN sku VARCHAR(100)"))
+    if "barcode" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN barcode VARCHAR(100)"))
+    if "stock" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN stock INTEGER"))
+    if "min_stock" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN min_stock INTEGER"))
+
+    # ✅ NUEVO (Lovable UI)
+    if "brand" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN brand VARCHAR(120)"))
+    if "description" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN description VARCHAR(500)"))
+    if "size" not in existing:
+        db.execute(text("ALTER TABLE products ADD COLUMN size VARCHAR(50)"))
+
+    db.commit()
+
+    db.execute(text("UPDATE products SET stock = COALESCE(stock, 0)"))
+    db.execute(text("UPDATE products SET min_stock = COALESCE(min_stock, 0)"))
+    db.commit()
 
 
 def _sqlite_add_missing_tenant_columns(db: Session) -> None:
@@ -50,11 +82,13 @@ def _sqlite_add_missing_tenant_columns(db: Session) -> None:
         {"now": now},
     )
     db.execute(
-        text("""
+        text(
+            """
             UPDATE tenants
             SET trial_end = COALESCE(trial_end, datetime(COALESCE(created_at, :now), '+15 day'))
             WHERE plan = 'FREE_TRIAL' AND trial_end IS NULL
-        """),
+        """
+        ),
         {"now": now},
     )
 
@@ -102,8 +136,15 @@ def _sqlite_add_missing_user_columns(db: Session) -> None:
 
     # Backfill users
     now = datetime.utcnow().isoformat(sep=" ")
-    db.execute(text("UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"))
-    db.execute(text("UPDATE users SET updated_at = COALESCE(updated_at, created_at, :now)"), {"now": now})
+    db.execute(
+        text(
+            "UPDATE users SET must_change_password = 0 WHERE must_change_password IS NULL"
+        )
+    )
+    db.execute(
+        text("UPDATE users SET updated_at = COALESCE(updated_at, created_at, :now)"),
+        {"now": now},
+    )
     db.commit()
 
 
@@ -131,20 +172,60 @@ def _sqlite_add_missing_cash_columns(db: Session) -> None:
     if "difference_amount" not in existing:
         db.execute(text("ALTER TABLE cash_sessions ADD COLUMN difference_amount FLOAT"))
     if "closed_by_user_id" not in existing:
-        db.execute(text("ALTER TABLE cash_sessions ADD COLUMN closed_by_user_id INTEGER"))
+        db.execute(
+            text("ALTER TABLE cash_sessions ADD COLUMN closed_by_user_id INTEGER")
+        )
 
     db.commit()
 
     # Backfill defaults
-    db.execute(text("UPDATE cash_sessions SET withdrawal_amount = COALESCE(withdrawal_amount, 0)"))
-    db.execute(text("UPDATE cash_sessions SET expected_amount = COALESCE(expected_amount, 0)"))
-    db.execute(text("UPDATE cash_sessions SET difference_amount = COALESCE(difference_amount, 0)"))
+    db.execute(
+        text(
+            "UPDATE cash_sessions SET withdrawal_amount = COALESCE(withdrawal_amount, 0)"
+        )
+    )
+    db.execute(
+        text("UPDATE cash_sessions SET expected_amount = COALESCE(expected_amount, 0)")
+    )
+    db.execute(
+        text(
+            "UPDATE cash_sessions SET difference_amount = COALESCE(difference_amount, 0)"
+        )
+    )
     db.commit()
 
+
+def _sqlite_add_missing_sales_columns(db: Session) -> None:
+    if not _is_sqlite(db):
+        return
+
+    existing = _sqlite_table_columns(db, "sales")
+
+    # Nuevos campos cache para UI
+    if "product_id" not in existing:
+        db.execute(text("ALTER TABLE sales ADD COLUMN product_id INTEGER"))
+    if "product_name" not in existing:
+        db.execute(text("ALTER TABLE sales ADD COLUMN product_name VARCHAR(255)"))
+    if "product_barcode" not in existing:
+        db.execute(text("ALTER TABLE sales ADD COLUMN product_barcode VARCHAR(100)"))
+    if "product_sku" not in existing:
+        db.execute(text("ALTER TABLE sales ADD COLUMN product_sku VARCHAR(100)"))
+    # ✅ cantidad y precio unitario (si tu UI calcula total por qty*price)
+    if "quantity" not in existing:
+        db.execute(text("ALTER TABLE sales ADD COLUMN quantity INTEGER"))
+    if "unit_price" not in existing:
+        db.execute(text("ALTER TABLE sales ADD COLUMN unit_price FLOAT"))
+
+    db.commit()
+
+    db.execute(text("UPDATE sales SET quantity = COALESCE(quantity, items_count, 1)"))
+    db.execute(text("UPDATE sales SET unit_price = COALESCE(unit_price, total)"))
+    db.commit()
 
 # -----------
 # Seed
 # -----------
+
 
 def ensure_seed(db: Session) -> None:
     # ✅ 0) Auto-migrate SQLite (MVP)
@@ -152,6 +233,8 @@ def ensure_seed(db: Session) -> None:
     _sqlite_add_missing_product_columns(db)
     _sqlite_add_missing_user_columns(db)
     _sqlite_add_missing_cash_columns(db)
+    _sqlite_add_missing_product_columns(db)
+    _sqlite_add_missing_sales_columns(db)
 
     # --- Superadmin
     super_email = "super@boutiqueos.com"
@@ -193,7 +276,10 @@ def ensure_seed(db: Session) -> None:
         if getattr(tenant, "is_active", None) is None:
             tenant.is_active = True
             changed = True
-        if tenant.plan == PlanType.FREE_TRIAL and getattr(tenant, "trial_end", None) is None:
+        if (
+            tenant.plan == PlanType.FREE_TRIAL
+            and getattr(tenant, "trial_end", None) is None
+        ):
             tenant.trial_end = (tenant.created_at or now) + timedelta(days=15)
             changed = True
         if changed:
