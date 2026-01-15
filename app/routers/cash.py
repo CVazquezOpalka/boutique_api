@@ -19,9 +19,10 @@ router = APIRouter(prefix="/cash", tags=["cash"])
 
 
 # ----------------------------- HELPERS --------------------------------------------
-def _sales_breakdown_for_cash(db: Session, cash_id: int):
+def _sales_breakdown_for_cash(db: Session, tenant_id: int, cash_id: int):
     rows = (
         db.query(Sale.payment_method, func.coalesce(func.sum(Sale.total), 0))
+        .filter(Sale.tenant_id == tenant_id)
         .filter(Sale.cash_session_id == cash_id)
         .group_by(Sale.payment_method)
         .all()
@@ -43,9 +44,10 @@ def _sales_breakdown_for_cash(db: Session, cash_id: int):
     }
 
 
-def _withdrawals_total_for_cash(db: Session, cash_id: int) -> float:
+def _withdrawals_total_for_cash(db: Session, tenant_id: int, cash_id: int) -> float:
     total = (
         db.query(func.coalesce(func.sum(CashWithdrawal.amount), 0))
+        .filter(CashWithdrawal.tenant_id == tenant_id)
         .filter(CashWithdrawal.cash_session_id == cash_id)
         .scalar()
     )
@@ -67,8 +69,8 @@ def get_open_cash(db: Session = Depends(get_db), u=Depends(require_tenant_user))
     if not c:
         return None
 
-    breakdown = _sales_breakdown_for_cash(db, c.id)
-    withdrawal = _withdrawals_total_for_cash(db, c.id)
+    breakdown = _sales_breakdown_for_cash(db, u.tenant_id, c.id)
+    withdrawal = _withdrawals_total_for_cash(db, u.tenant_id, c.id)
 
     expected = (
         float(c.opening_amount or 0)
@@ -87,7 +89,7 @@ def get_open_cash(db: Session = Depends(get_db), u=Depends(require_tenant_user))
         card_amount=breakdown["card_amount"],
         other_amount=breakdown["other_amount"],
         total_sales_amount=breakdown["total_sales_amount"],
-        withdrawal_amount=withdrawal,
+        withdrawal_amount=float(withdrawal or 0),
         expected_amount=expected,
         by_payment_method=breakdown["by_payment_method"],
     )
@@ -129,13 +131,20 @@ def close_cash(
     db: Session = Depends(get_db),
     u=Depends(require_tenant_user),
 ):
-    c = db.get(CashSession, cash_id)
-    if not c or c.tenant_id != u.tenant_id:
+    c = (
+        db.query(CashSession)
+        .filter(
+            CashSession.id == cash_id,
+            CashSession.tenant_id == u.tenant_id,
+        )
+        .first()
+    )
+    if not c:
         raise HTTPException(404, "Caja no encontrada")
     if c.status != CashStatus.OPEN:
         raise HTTPException(409, "Caja ya cerrada")
 
-    # ✅ Si mandan retiro al cierre, lo persistimos como withdrawal real
+    # ✅ Si mandan retiro al cierre, lo persistimos como withdrawal real (sin commit todavía)
     if payload.withdrawal_amount and payload.withdrawal_amount > 0:
         w = CashWithdrawal(
             tenant_id=u.tenant_id,
@@ -145,10 +154,14 @@ def close_cash(
             notes=payload.withdrawal_notes,
         )
         db.add(w)
-        db.commit()
 
-    breakdown = _sales_breakdown_for_cash(db, c.id)
-    withdrawal_total = _withdrawals_total_for_cash(db, c.id)
+    breakdown = _sales_breakdown_for_cash(db, u.tenant_id, c.id)
+    withdrawal_total = _withdrawals_total_for_cash(db, u.tenant_id, c.id)
+
+    # ⚠️ Importante: si agregamos w arriba, todavía no está en DB (no commit),
+    # pero SQLAlchemy lo tiene "pending". Para incluirlo en el sum, hacemos flush.
+    db.flush()
+    withdrawal_total = _withdrawals_total_for_cash(db, u.tenant_id, c.id)
 
     expected = (
         float(c.opening_amount or 0)
@@ -162,9 +175,9 @@ def close_cash(
     c.closed_at = datetime.utcnow()
     c.closed_by_user_id = u.id
 
-    # ✅ cache opcional en cash_sessions (útil para auditoría rápida)
+    # ✅ cache opcional (solo número total, notes NO representan todos los retiros)
     c.withdrawal_amount = float(withdrawal_total or 0)
-    c.withdrawal_notes = payload.withdrawal_notes
+    c.withdrawal_notes = None  # <- mejor dejarlo null para no mentir
 
     c.expected_amount = expected
     c.closing_amount = counted

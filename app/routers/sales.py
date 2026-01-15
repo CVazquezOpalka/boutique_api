@@ -9,12 +9,19 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import require_tenant_user
-from ..models import Sale, Variant, PaymentMethod, Product, CashSession, CashStatus
+from ..models import (
+    Sale,
+    SaleItem,          # ✅ IMPORTANTE
+    PaymentMethod,
+    Product,
+    CashSession,
+    CashStatus,
+)
 
 router = APIRouter(prefix="/sales", tags=["sales"])
 
 
-# -------- Schemas (MVP) --------
+# ---------------- Schemas ----------------
 class SaleItemIn(BaseModel):
     product_id: int
     quantity: int
@@ -22,14 +29,20 @@ class SaleItemIn(BaseModel):
 
 
 class SaleCreateIn(BaseModel):
-    total: float
     payment_method: Optional[str] = "EFECTIVO"
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
 
+    # ✅ NUEVO: carrito
+    items: Optional[List[SaleItemIn]] = None
+
+    # ✅ LEGACY (fallback)
     product_id: Optional[int] = None
     code: Optional[str] = None
-    quantity: int
+    quantity: Optional[int] = None
+
+    # ✅ opcional: si el front lo manda, lo validamos vs lo calculado (soft)
+    total: Optional[float] = None
 
 
 class SaleOut(BaseModel):
@@ -41,7 +54,7 @@ class SaleOut(BaseModel):
     payment_method: Optional[str] = None
     created_at: datetime
 
-    # ✅ snapshot
+    # snapshot rápido (para tabla)
     product_id: Optional[int] = None
     product_name: Optional[str] = None
     product_barcode: Optional[str] = None
@@ -53,7 +66,7 @@ class SaleOut(BaseModel):
         from_attributes = True
 
 
-# -------- helpers --------
+# ---------------- helpers ----------------
 def _find_product_by_code(db: Session, tenant_id: int, code: str) -> Product | None:
     c = (code or "").strip()
     if not c:
@@ -93,40 +106,9 @@ def create_sale(
     db: Session = Depends(get_db),
     u=Depends(require_tenant_user),
 ):
-    if payload.total <= 0:
-        raise HTTPException(400, "El total debe ser mayor a 0.")
-
-    if payload.quantity is None or payload.quantity <= 0:
-        raise HTTPException(400, "quantity es requerido y debe ser > 0")
-
     pm = _parse_payment_method(payload.payment_method)
 
-    # 🔍 Resolver producto
-    product: Product | None = None
-
-    if payload.product_id:
-        product = (
-            db.query(Product)
-            .filter(
-                Product.id == payload.product_id,
-                Product.tenant_id == u.tenant_id,
-                Product.active == True,
-            )
-            .first()
-        )
-    elif payload.code:
-        product = _find_product_by_code(db, u.tenant_id, payload.code)
-
-    if not product:
-        raise HTTPException(404, "Producto no encontrado")
-
-    # 📦 Stock
-    if (product.stock or 0) < payload.quantity:
-        raise HTTPException(409, f"Stock insuficiente. Disponible: {product.stock}")
-
-    product.stock = (product.stock or 0) - payload.quantity
-
-    # 💰 Caja abierta
+    # 💰 Caja abierta (obligatorio)
     open_cash = (
         db.query(CashSession)
         .filter(
@@ -136,44 +118,143 @@ def create_sale(
         .order_by(CashSession.opened_at.desc())
         .first()
     )
-
     if not open_cash:
         raise HTTPException(
             409,
             "No hay una caja abierta. Debes abrir la caja para registrar ventas.",
         )
 
-    # 💵 Precio unitario (snapshot)
-    unit_price = float(product.price or 0)
+    # ✅ Resolver items: carrito o legacy
+    items_in: List[SaleItemIn] = []
+    if payload.items and len(payload.items) > 0:
+        items_in = payload.items
+    else:
+        # legacy: product_id o code + quantity
+        if (payload.product_id is None) and (not payload.code):
+            raise HTTPException(400, "Debe enviar items[] o product_id/code (legacy).")
+        if payload.quantity is None or payload.quantity <= 0:
+            raise HTTPException(400, "quantity es requerido y debe ser > 0 (legacy).")
 
-    # Si el front manda total, ok. Pero si querés protegerte:
-    expected_total = unit_price * payload.quantity
-    # (opcional) si querés forzar consistencia:
-    # if abs(payload.total - expected_total) > 0.01:
-    #     raise HTTPException(400, "Total inválido para el producto/cantidad.")
+        # si viene por code, lo resolvemos a product_id
+        if payload.product_id is None and payload.code:
+            p = _find_product_by_code(db, u.tenant_id, payload.code)
+            if not p:
+                raise HTTPException(404, "Producto no encontrado")
+            items_in = [SaleItemIn(product_id=p.id, quantity=int(payload.quantity))]
+        else:
+            items_in = [SaleItemIn(product_id=int(payload.product_id), quantity=int(payload.quantity))]
 
-    # 🧾 Crear venta (GUARDANDO SNAPSHOT)
+    # Validaciones básicas
+    if not items_in:
+        raise HTTPException(400, "items vacío.")
+    for it in items_in:
+        if it.quantity is None or it.quantity <= 0:
+            raise HTTPException(400, "Cada item.quantity debe ser > 0")
+
+    # 🔍 Precargar productos y validar
+    product_ids = list({it.product_id for it in items_in})
+    products = (
+        db.query(Product)
+        .filter(
+            Product.tenant_id == u.tenant_id,
+            Product.id.in_(product_ids),
+            Product.active == True,
+        )
+        .all()
+    )
+    prod_by_id = {p.id: p for p in products}
+
+    # chequeo: todos existen
+    missing = [pid for pid in product_ids if pid not in prod_by_id]
+    if missing:
+        raise HTTPException(404, f"Productos no encontrados o inactivos: {missing}")
+
+    # 📦 Stock + cálculo total
+    subtotal = 0.0
+    items_count = 0
+
+    # Creamos la venta primero (sin totals) para asociar items
     sale = Sale(
         tenant_id=u.tenant_id,
         created_by_user_id=u.id,
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
         payment_method=pm,
-        subtotal=float(payload.total),
-        total=float(payload.total),
         discount=0.0,
         margin=0.0,
-        items_count=int(payload.quantity),  # si lo usás como "unidades"
         cash_session_id=open_cash.id,
         created_at=datetime.utcnow(),
-        # ✅ snapshot producto
-        product_id=product.id,
-        product_name=product.name,
-        product_sku=product.sku,
-        product_barcode=product.barcode,
-        quantity=int(payload.quantity),
-        unit_price=unit_price,
+        subtotal=0.0,
+        total=0.0,
+        items_count=0,
     )
+
+    # Snapshot rápido: primer item
+    first_product: Optional[Product] = None
+    first_unit_price: Optional[float] = None
+
+    for idx, it in enumerate(items_in):
+        p = prod_by_id[it.product_id]
+
+        unit_price = float(it.unit_price) if it.unit_price is not None else float(p.price or 0)
+        line_total = unit_price * int(it.quantity)
+
+        # stock
+        current_stock = int(p.stock or 0)
+        if current_stock < int(it.quantity):
+            raise HTTPException(
+                409,
+                f"Stock insuficiente para '{p.name}'. Disponible: {current_stock}",
+            )
+
+        # descuenta stock
+        p.stock = current_stock - int(it.quantity)
+
+        # acumula totales
+        subtotal += line_total
+        items_count += int(it.quantity)
+
+        # snapshot del primer item
+        if idx == 0:
+            first_product = p
+            first_unit_price = unit_price
+
+        # crea item
+        sale_item = SaleItem(
+            tenant_id=u.tenant_id,
+            sale=sale,
+            product_id=p.id,
+            quantity=int(it.quantity),
+            unit_price=unit_price,
+            # si tu SaleItem tiene snapshot extra, podés guardarlo acá:
+            # product_name=p.name,
+            # product_sku=p.sku,
+            # product_barcode=p.barcode,
+            # line_total=line_total,
+        )
+        sale.items.append(sale_item)
+
+    # totals en Sale
+    sale.subtotal = float(subtotal)
+    sale.total = float(subtotal)  # si más adelante metés descuento/impuestos, ajustás acá
+    sale.items_count = int(items_count)
+
+    # snapshot rápido para la tabla (1er producto + cantidad total)
+    if first_product:
+        sale.product_id = first_product.id
+        sale.product_name = first_product.name
+        sale.product_sku = first_product.sku
+        sale.product_barcode = first_product.barcode
+        sale.quantity = int(items_count)          # ✅ total unidades vendidas en la operación
+        sale.unit_price = float(first_unit_price or 0)
+
+    # (opcional) validar total del front si lo mandan
+    if payload.total is not None:
+        if abs(float(payload.total) - float(sale.total)) > 0.01:
+            raise HTTPException(
+                400,
+                f"Total inválido. Calculado={sale.total} recibido={payload.total}",
+            )
 
     db.add(sale)
     db.commit()
