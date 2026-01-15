@@ -31,6 +31,7 @@ class SaleCreateIn(BaseModel):
     code: Optional[str] = None
     quantity: int
 
+
 class SaleOut(BaseModel):
     id: int
     customer_id: Optional[int] = None
@@ -40,7 +41,8 @@ class SaleOut(BaseModel):
     payment_method: Optional[str] = None
     created_at: datetime
 
-    # ✅ para la columna "Producto"
+    # ✅ snapshot
+    product_id: Optional[int] = None
     product_name: Optional[str] = None
     product_barcode: Optional[str] = None
     product_sku: Optional[str] = None
@@ -49,6 +51,7 @@ class SaleOut(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 # -------- helpers --------
 def _find_product_by_code(db: Session, tenant_id: int, code: str) -> Product | None:
@@ -118,13 +121,10 @@ def create_sale(
         raise HTTPException(404, "Producto no encontrado")
 
     # 📦 Stock
-    if product.stock < payload.quantity:
-        raise HTTPException(
-            409,
-            f"Stock insuficiente. Disponible: {product.stock}",
-        )
+    if (product.stock or 0) < payload.quantity:
+        raise HTTPException(409, f"Stock insuficiente. Disponible: {product.stock}")
 
-    product.stock -= payload.quantity
+    product.stock = (product.stock or 0) - payload.quantity
 
     # 💰 Caja abierta
     open_cash = (
@@ -143,24 +143,39 @@ def create_sale(
             "No hay una caja abierta. Debes abrir la caja para registrar ventas.",
         )
 
-    # 🧾 Crear venta
+    # 💵 Precio unitario (snapshot)
+    unit_price = float(product.price or 0)
+
+    # Si el front manda total, ok. Pero si querés protegerte:
+    expected_total = unit_price * payload.quantity
+    # (opcional) si querés forzar consistencia:
+    # if abs(payload.total - expected_total) > 0.01:
+    #     raise HTTPException(400, "Total inválido para el producto/cantidad.")
+
+    # 🧾 Crear venta (GUARDANDO SNAPSHOT)
     sale = Sale(
         tenant_id=u.tenant_id,
         created_by_user_id=u.id,
         customer_id=payload.customer_id,
         customer_name=payload.customer_name,
         payment_method=pm,
-        subtotal=payload.total,
-        total=payload.total,
+        subtotal=float(payload.total),
+        total=float(payload.total),
         discount=0.0,
         margin=0.0,
-        items_count=payload.quantity,
+        items_count=int(payload.quantity),  # si lo usás como "unidades"
         cash_session_id=open_cash.id,
         created_at=datetime.utcnow(),
+        # ✅ snapshot producto
+        product_id=product.id,
+        product_name=product.name,
+        product_sku=product.sku,
+        product_barcode=product.barcode,
+        quantity=int(payload.quantity),
+        unit_price=unit_price,
     )
 
     db.add(sale)
     db.commit()
     db.refresh(sale)
-
     return sale

@@ -308,3 +308,26 @@ class StockMovement(Base):
     delta: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[StockReason] = mapped_column(Enum(StockReason), nullable=False)
     note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class CashWithdrawal(Base):
+    __tablename__ = "cash_withdrawals"
+    __table_args__ = (
+        Index("ix_cash_withdrawals_cash_created", "cash_session_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    cash_session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("cash_sessions.id"), nullable=False
+    )
+
+    created_by_user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)

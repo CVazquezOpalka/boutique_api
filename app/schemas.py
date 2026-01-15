@@ -299,3 +299,21 @@ class VariantUpdate(BaseModel):
     sku: Optional[str] = None
     stock: Optional[int] = None
     min_stock: Optional[int] = None
+
+
+#-----------RETIROS--------------------
+
+class CashWithdrawalIn(BaseModel):
+    amount: float
+    notes: str | None = None
+
+class CashWithdrawalOut(BaseModel):
+    id: int
+    cash_session_id: int
+    created_by_user_id: int
+    created_at: datetime
+    amount: float
+    notes: str | None = None
+
+    class Config:
+        from_attributes = True
