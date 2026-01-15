@@ -119,23 +119,18 @@ def create_sale(
         .first()
     )
     if not open_cash:
-        raise HTTPException(
-            409,
-            "No hay una caja abierta. Debes abrir la caja para registrar ventas.",
-        )
+        raise HTTPException(409, "No hay una caja abierta. Debes abrir la caja para registrar ventas.")
 
     # ✅ Resolver items: carrito o legacy
     items_in: List[SaleItemIn] = []
     if payload.items and len(payload.items) > 0:
         items_in = payload.items
     else:
-        # legacy: product_id o code + quantity
         if (payload.product_id is None) and (not payload.code):
             raise HTTPException(400, "Debe enviar items[] o product_id/code (legacy).")
         if payload.quantity is None or payload.quantity <= 0:
             raise HTTPException(400, "quantity es requerido y debe ser > 0 (legacy).")
 
-        # si viene por code, lo resolvemos a product_id
         if payload.product_id is None and payload.code:
             p = _find_product_by_code(db, u.tenant_id, payload.code)
             if not p:
@@ -144,36 +139,32 @@ def create_sale(
         else:
             items_in = [SaleItemIn(product_id=int(payload.product_id), quantity=int(payload.quantity))]
 
-    # Validaciones básicas
     if not items_in:
         raise HTTPException(400, "items vacío.")
     for it in items_in:
         if it.quantity is None or it.quantity <= 0:
             raise HTTPException(400, "Cada item.quantity debe ser > 0")
 
-    # 🔍 Precargar productos y validar
+    # 🔍 Precargar productos
     product_ids = list({it.product_id for it in items_in})
     products = (
         db.query(Product)
         .filter(
             Product.tenant_id == u.tenant_id,
             Product.id.in_(product_ids),
-            Product.active == True,
+            Product.active == True,  # ojo si tu modelo usa is_active
         )
         .all()
     )
     prod_by_id = {p.id: p for p in products}
 
-    # chequeo: todos existen
     missing = [pid for pid in product_ids if pid not in prod_by_id]
     if missing:
         raise HTTPException(404, f"Productos no encontrados o inactivos: {missing}")
 
-    # 📦 Stock + cálculo total
     subtotal = 0.0
     items_count = 0
 
-    # Creamos la venta primero (sin totals) para asociar items
     sale = Sale(
         tenant_id=u.tenant_id,
         created_by_user_id=u.id,
@@ -189,74 +180,66 @@ def create_sale(
         items_count=0,
     )
 
-    # Snapshot rápido: primer item
     first_product: Optional[Product] = None
     first_unit_price: Optional[float] = None
 
     for idx, it in enumerate(items_in):
         p = prod_by_id[it.product_id]
 
+        # precios
         unit_price = float(it.unit_price) if it.unit_price is not None else float(p.price or 0)
+        unit_cost = float(getattr(p, "cost", 0) or 0)  # si Product tiene cost
         line_total = unit_price * int(it.quantity)
 
         # stock
         current_stock = int(p.stock or 0)
         if current_stock < int(it.quantity):
-            raise HTTPException(
-                409,
-                f"Stock insuficiente para '{p.name}'. Disponible: {current_stock}",
-            )
+            raise HTTPException(409, f"Stock insuficiente para '{p.name}'. Disponible: {current_stock}")
 
-        # descuenta stock
         p.stock = current_stock - int(it.quantity)
 
-        # acumula totales
         subtotal += line_total
         items_count += int(it.quantity)
 
-        # snapshot del primer item
         if idx == 0:
             first_product = p
             first_unit_price = unit_price
 
-        # crea item
+        # ✅ SaleItem con los campos reales
         sale_item = SaleItem(
             tenant_id=u.tenant_id,
-            sale=sale,
             product_id=p.id,
-            quantity=int(it.quantity),
+            variant_id=0,                 # MVP (sin variantes)
+            name=p.name or "Producto",
+            sku=(p.sku or p.barcode or str(p.id)),
+            qty=int(it.quantity),
             unit_price=unit_price,
-            # si tu SaleItem tiene snapshot extra, podés guardarlo acá:
-            # product_name=p.name,
-            # product_sku=p.sku,
-            # product_barcode=p.barcode,
-            # line_total=line_total,
+            unit_cost=unit_cost,
         )
         sale.items.append(sale_item)
 
-    # totals en Sale
     sale.subtotal = float(subtotal)
-    sale.total = float(subtotal)  # si más adelante metés descuento/impuestos, ajustás acá
+    sale.total = float(subtotal)
     sale.items_count = int(items_count)
 
-    # snapshot rápido para la tabla (1er producto + cantidad total)
+    # snapshot rápido (para lista)
     if first_product:
         sale.product_id = first_product.id
         sale.product_name = first_product.name
         sale.product_sku = first_product.sku
         sale.product_barcode = first_product.barcode
-        sale.quantity = int(items_count)          # ✅ total unidades vendidas en la operación
+        sale.quantity = int(items_count)      # total unidades
         sale.unit_price = float(first_unit_price or 0)
 
-    # (opcional) validar total del front si lo mandan
     if payload.total is not None:
         if abs(float(payload.total) - float(sale.total)) > 0.01:
-            raise HTTPException(
-                400,
-                f"Total inválido. Calculado={sale.total} recibido={payload.total}",
-            )
+            raise HTTPException(400, f"Total inválido. Calculado={sale.total} recibido={payload.total}")
 
-    db.add(sale)
-    db.commit()
-    db.refresh(sale)
-    return sale
+    try:
+        db.add(sale)
+        db.commit()
+        db.refresh(sale)
+        return sale
+    except Exception:
+        db.rollback()
+        raise

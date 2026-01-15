@@ -195,6 +195,59 @@ def _sqlite_add_missing_cash_columns(db: Session) -> None:
     db.commit()
 
 
+def _sqlite_add_missing_sale_item_columns(db: Session) -> None:
+    if not _is_sqlite(db):
+        return
+
+    existing = _sqlite_table_columns(db, "sale_items")
+
+    # ---------------- NUEVOS CAMPOS BASE ----------------
+
+    if "tenant_id" not in existing:
+        db.execute(
+            text("ALTER TABLE sale_items ADD COLUMN tenant_id INTEGER DEFAULT 0")
+        )
+
+    if "variant_id" not in existing:
+        db.execute(
+            text("ALTER TABLE sale_items ADD COLUMN variant_id INTEGER DEFAULT 0")
+        )
+
+    # ---------------- SNAPSHOT PRODUCTO ----------------
+
+    # nombre del producto al momento de la venta
+    if "name" not in existing:
+        db.execute(
+            text("ALTER TABLE sale_items ADD COLUMN name VARCHAR NOT NULL DEFAULT ''")
+        )
+
+    if "sku" not in existing:
+        db.execute(
+            text("ALTER TABLE sale_items ADD COLUMN sku VARCHAR NOT NULL DEFAULT ''")
+        )
+
+    # ---------------- CANTIDADES Y PRECIOS ----------------
+
+    if "qty" not in existing:
+        db.execute(
+            text("ALTER TABLE sale_items ADD COLUMN qty INTEGER NOT NULL DEFAULT 0")
+        )
+
+    if "unit_price" not in existing:
+        db.execute(
+            text(
+                "ALTER TABLE sale_items ADD COLUMN unit_price FLOAT NOT NULL DEFAULT 0"
+            )
+        )
+
+    if "unit_cost" not in existing:
+        db.execute(
+            text("ALTER TABLE sale_items ADD COLUMN unit_cost FLOAT NOT NULL DEFAULT 0")
+        )
+
+    db.commit()
+
+
 def _sqlite_add_missing_sales_columns(db: Session) -> None:
     if not _is_sqlite(db):
         return
@@ -222,6 +275,7 @@ def _sqlite_add_missing_sales_columns(db: Session) -> None:
     db.execute(text("UPDATE sales SET unit_price = COALESCE(unit_price, total)"))
     db.commit()
 
+
 # -----------
 # Seed
 # -----------
@@ -235,6 +289,7 @@ def ensure_seed(db: Session) -> None:
     _sqlite_add_missing_cash_columns(db)
     _sqlite_add_missing_product_columns(db)
     _sqlite_add_missing_sales_columns(db)
+    _sqlite_add_missing_sale_item_columns(db)
 
     # --- Superadmin
     super_email = "super@boutiqueos.com"

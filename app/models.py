@@ -272,20 +272,33 @@ class Sale(Base):
 
 class SaleItem(Base):
     __tablename__ = "sale_items"
-    __table_args__ = (Index("ix_sale_items_sale", "sale_id"),)
+    __table_args__ = (
+        Index("ix_sale_items_sale", "sale_id"),
+        Index("ix_sale_items_tenant", "tenant_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # ✅ NUEVO
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
     sale_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("sales.id"), nullable=False
     )
 
     product_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    variant_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # MVP: si todavía no hay variantes, usamos 0
+    variant_id: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
+
+    # snapshot del producto al momento de la venta
     name: Mapped[str] = mapped_column(String, nullable=False)
     sku: Mapped[str] = mapped_column(String, nullable=False)
+
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
+
     unit_price: Mapped[float] = mapped_column(Float, nullable=False)
-    unit_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0)
 
     sale: Mapped["Sale"] = relationship(back_populates="items")
 
@@ -327,7 +340,9 @@ class CashWithdrawal(Base):
         Integer, ForeignKey("users.id"), nullable=False
     )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
 
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
