@@ -10,6 +10,7 @@ from .routers.cash import router as cash_router
 from .routers.sales import router as sales_router
 from .routers.stock import router as stock_router
 from .routers.reports import router as reports_router
+from .routers.costumers import router as costumers_router
 from app.routers import auth, auth_compat
 
 app = FastAPI(title="BoutiqueOS API")
@@ -44,6 +45,7 @@ app.include_router(cash_router)
 app.include_router(sales_router)
 app.include_router(stock_router)
 app.include_router(reports_router)
+app.include_router(costumers_router)
 
 
 @app.get("/health")

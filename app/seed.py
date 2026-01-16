@@ -276,6 +276,44 @@ def _sqlite_add_missing_sales_columns(db: Session) -> None:
     db.commit()
 
 
+def _sqlite_add_missing_customer_columns(db: Session) -> None:
+    if not _is_sqlite(db):
+        return
+
+    existing = _sqlite_table_columns(db, "customers")
+
+    if "tenant_id" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN tenant_id INTEGER DEFAULT 0"))
+
+    if "document" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN document VARCHAR(50)"))
+
+    if "name" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN name VARCHAR(255) NOT NULL DEFAULT ''"))
+
+    if "email" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN email VARCHAR(255)"))
+
+    if "phone" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN phone VARCHAR(50)"))
+
+    if "address" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN address VARCHAR(255)"))
+
+    if "notes" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN notes VARCHAR(500)"))
+
+    if "active" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN active BOOLEAN NOT NULL DEFAULT 1"))
+
+    if "created_at" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN created_at DATETIME"))
+
+    if "updated_at" not in existing:
+        db.execute(text("ALTER TABLE customers ADD COLUMN updated_at DATETIME"))
+
+    db.commit()
+
 # -----------
 # Seed
 # -----------
@@ -290,6 +328,7 @@ def ensure_seed(db: Session) -> None:
     _sqlite_add_missing_product_columns(db)
     _sqlite_add_missing_sales_columns(db)
     _sqlite_add_missing_sale_item_columns(db)
+    _sqlite_add_missing_customer_columns(db)
 
     # --- Superadmin
     super_email = "super@boutiqueos.com"

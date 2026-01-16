@@ -10,7 +10,6 @@ class TokenOut(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
 
-
 class MeOut(BaseModel):
     id: int
     tenant_id: Optional[int] = None
@@ -18,18 +17,15 @@ class MeOut(BaseModel):
     name: str
     email: EmailStr
 
-
 class AdminUserCreate(BaseModel):
     name: str = Field(min_length=2)
     email: EmailStr
     password: str = Field(min_length=6)
 
-
 class TenantCreate(BaseModel):
     name: str = Field(min_length=2)
     slug: str = Field(min_length=2)
     admin_user: AdminUserCreate
-
 
 class UserOut(BaseModel):
     id: int
@@ -39,7 +35,6 @@ class UserOut(BaseModel):
     email: EmailStr
     active: bool
     created_at: datetime
-
 
 class TenantOut(BaseModel):
     id: int
@@ -60,11 +55,9 @@ class TenantOut(BaseModel):
     class Config:
         orm_mode = True
 
-
 class TenantUpdateIn(BaseModel):
     is_active: bool | None = None
     plan: PlanType | None = None
-
 
 # --- Users
 class EmployeeCreate(BaseModel):
@@ -108,7 +101,6 @@ class ProductCreate(BaseModel):
     cost: float = 0
     price: float = 0
     active: bool = True
-
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -176,7 +168,6 @@ class ProductOut(BaseModel):
 class CashOpenIn(BaseModel):
     opening_amount: float = 0
 
-
 class CashCloseIn(BaseModel):
     # ✅ opcional: si no lo mandan, asumimos que el cierre = expected_amount
     counted_amount: float | None = None
@@ -184,7 +175,6 @@ class CashCloseIn(BaseModel):
     # ✅ egreso opcional antes de cerrar
     withdrawal_amount: float = 0
     withdrawal_notes: str | None = None
-
 
 class CashOpenOut(BaseModel):
     id: int
@@ -205,7 +195,6 @@ class CashOpenOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 class CashOut(BaseModel):
     id: int
     tenant_id: int
@@ -214,13 +203,11 @@ class CashOut(BaseModel):
     opening_amount: float
     status: CashStatus
 
-
 # --- Sales
 class SaleItemIn(BaseModel):
     product_id: int
     variant_id: int
     qty: int = Field(gt=0)
-
 
 class SaleCreate(BaseModel):
     payment_method: PaymentMethod
@@ -236,7 +223,6 @@ class SaleItemOut(BaseModel):
     unit_price: float
     unit_cost: float
 
-
 class SaleOut(BaseModel):
     id: int
     customer_id: Optional[int] = None
@@ -250,14 +236,12 @@ class SaleOut(BaseModel):
         from_attributes = True  # pydantic v2
         # si estás en pydantic v1: orm_mode = True
 
-
 # --- Stock
 class StockAdjustIn(BaseModel):
     product_id: int
     variant_id: int
     delta: int
     note: Optional[str] = None
-
 
 class StockMovementOut(BaseModel):
     id: int
@@ -270,7 +254,6 @@ class StockMovementOut(BaseModel):
     reason: StockReason
     note: Optional[str] = None
 
-
 # --- Reports
 class DashboardOut(BaseModel):
     total_sales_today: float
@@ -279,7 +262,6 @@ class DashboardOut(BaseModel):
     total_customers: int
     low_stock_count: int
     recent_sales: List[SaleOut]
-
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -291,7 +273,11 @@ class ProductUpdate(BaseModel):
     barcode: Optional[str] = None
     stock: Optional[int] = None
     min_stock: Optional[int] = None
-
+    brand: Optional[str] = None
+    description: Optional[str] = None
+    size: Optional[str] = None
+    variants: Optional[List[VariantOut]] = None
+    
 
 class VariantUpdate(BaseModel):
     size: Optional[str] = None
@@ -299,7 +285,6 @@ class VariantUpdate(BaseModel):
     sku: Optional[str] = None
     stock: Optional[int] = None
     min_stock: Optional[int] = None
-
 
 #-----------RETIROS--------------------
 
@@ -314,6 +299,40 @@ class CashWithdrawalOut(BaseModel):
     created_at: datetime
     amount: float
     notes: str | None = None
+
+    class Config:
+        from_attributes = True
+
+#-----------COSTUMERS--------------------
+class CustomerCreateIn(BaseModel):
+    name: str
+    document: str | None = None  # ✅ existe siempre en schema
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    notes: str | None = None
+
+class CustomerUpdateIn(BaseModel):
+    name: str | None = None
+    document: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    notes: str | None = None
+    active: bool | None = None
+
+class CustomerOut(BaseModel):
+    id: int
+    tenant_id: int
+    name: str
+    document: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    notes: str | None = None
+    active: bool
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True

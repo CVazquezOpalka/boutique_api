@@ -346,3 +346,34 @@ class CashWithdrawal(Base):
 
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+    __table_args__ = (
+        Index("ix_customers_tenant_document", "tenant_id", "document"),
+        Index("ix_customers_tenant_name", "tenant_id", "name"),
+        Index("ix_customers_tenant_phone", "tenant_id", "phone"),
+        Index("ix_customers_tenant_email", "tenant_id", "tenant_id", "email"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # ✅ nuevo: documento (DNI/CUIT/etc) - requerido en modelo pero nullable para migración/MVP
+    document: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
